@@ -1,172 +1,216 @@
-import pickle
-import json
-import typing
-import datetime
-import sys
 import shelve
+import json
 import inspect
 import time
-import pathlib
+import uuid
 import functools
+from pathlib import Path
+import contextlib
+from typing import Any, Dict, Optional, Iterator, Callable, TypeVar, Union, cast
+
+T = TypeVar('T', bound=Callable[..., Any])
+
+def log_parameters(
+    func: Optional[Callable] = None, 
+    *,
+    include: Optional[list[str]] = None,
+    exclude: Optional[list[str]] = None,
+    **metadata
+) -> Union[Callable[[T], T], T]:
+    """
+    Decorator that logs function parameters and creates a trace ID to link all logs
+    within the function call.
+    """
+    def _decorator(f: T) -> T:
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            try:
+                # Get function signature and bind arguments
+                sig = inspect.signature(f)
+                bound_args = sig.bind(*args, **kwargs)
+                bound_args.apply_defaults()
+                
+                # Get all parameters
+                params = dict(bound_args.arguments)
+                
+                # Extract and validate logger
+                logger = params.get('logger')
+                if not isinstance(logger, ExperimentLogger):
+                    raise ValueError("Missing or invalid logger parameter")
+                params.pop('logger')
+                
+                # Filter parameters based on include/exclude lists
+                if include is not None:
+                    params = {k: v for k, v in params.items() if k in include}
+                if exclude is not None:
+                    params = {k: v for k, v in params.items() if k not in exclude}
+                
+                # Generate trace ID for this function call
+                trace_id = str(uuid.uuid4())
+                
+                # Log parameters with trace ID
+                logger.log(
+                    params,
+                    trace_id=trace_id,
+                    event='function_entry',
+                    function_name=f.__name__,
+                    **metadata
+                )
+                
+                # Execute function with trace context
+                with logger._trace_context(trace_id):
+                    return f(*args, **kwargs)
+                    
+            except Exception as e:
+                raise RuntimeError(f"Error in parameter logging: {str(e)}") from e
+            
+        return cast(T, wrapper)
+    
+    if func is None:
+        return _decorator
+    return _decorator(func)
+
 
 class ExperimentLogger:
-    """
-    A stateful logger for arbitrary Python objects that maintains metadata
-    across function calls.
-    """
-    def __init__(self, log_directory: str = 'experiment_logs'):
-        """
-        Initialize the logger with a specific log directory.
-        """
-        self.log_dir = pathlib.Path(log_directory)
-        self.log_dir.mkdir(exist_ok=True)
+    """A stateful logger that links logs within function calls using trace IDs."""
+    
+    def __init__(self, 
+                 log_directory: Union[str, Path] = 'experiment_logs', 
+                 **metadata: Any) -> None:
+        """Initialize the logger with a directory and base metadata."""
+        self.log_dir = Path(log_directory)
+        self.log_dir.mkdir(exist_ok=True, parents=True)
         
         self.objects_path = str(self.log_dir / 'objects')
         self.metadata_path = self.log_dir / 'metadata.jsonl'
+        self.base_metadata = metadata
         
-        # Stack to maintain metadata across function calls
-        self._metadata_stack: typing.List[typing.Dict[str, typing.Any]] = []
-    
-    def push_metadata(self, metadata: typing.Dict[str, typing.Any]) -> None:
-        """Push metadata onto the stack."""
-        self._metadata_stack.append(metadata)
-    
-    def pop_metadata(self) -> typing.Dict[str, typing.Any]:
-        """Pop metadata from the stack."""
-        return self._metadata_stack.pop() if self._metadata_stack else {}
-    
-    def peek_metadata(self) -> typing.Dict[str, typing.Any]:
-        """Get current metadata without removing it."""
-        return self._metadata_stack[-1] if self._metadata_stack else {}
+        # Stack for trace IDs (supports nested function calls)
+        self._trace_stack: list[str] = []
+        
+        if not self.metadata_path.exists():
+            self.metadata_path.touch()
 
-    def track_function(self, func=None, **metadata):
-        """
-        Decorator to track function calls and maintain metadata stack.
-        Can be used as @logger.track_function or @logger.track_function(key=value)
-        """
-        def decorator(fn):
-            @functools.wraps(fn)
-            def wrapper(*args, **kwargs):
-                # Prepare function metadata
-                func_metadata = {
-                    'function_name': fn.__name__,
-                    'function_file': inspect.getfile(fn),
-                    'function_line': inspect.getsourcelines(fn)[1],
-                    **metadata
-                }
-                
-                # Merge with current metadata if any
-                if self._metadata_stack:
-                    func_metadata['parent_metadata'] = self.peek_metadata()
-                
-                # Push new metadata to stack
-                self.push_metadata(func_metadata)
-                
-                try:
-                    return fn(*args, **kwargs)
-                finally:
-                    # Always pop metadata when function exits
-                    self.pop_metadata()
+    @contextlib.contextmanager
+    def _trace_context(self, trace_id: str):
+        """Context manager for tracking the current function's trace ID."""
+        self._trace_stack.append(trace_id)
+        try:
+            yield
+        finally:
+            self._trace_stack.pop()
+    
+    def _get_caller_info(self) -> Dict[str, Any]:
+        """Get information about the actual calling function."""
+        frame = inspect.currentframe()
+        if frame is None:
+            return {}
             
-            return wrapper
-        
-        # Handle both @track_function and @track_function(metadata)
-        if func is None:
-            return decorator
-        return decorator(func)
-
-    def log(self,
-            obj: typing.Any, 
-            custom_metadata: typing.Optional[typing.Dict[str, typing.Any]] = None, 
-            variable_name: typing.Optional[str] = None
-        ) -> None:
-        """
-        Log an arbitrary Python object with metadata.
-        """
-        # Get caller information
-        caller_frame = inspect.currentframe().f_back
-        filename = caller_frame.f_code.co_filename
-        lineno = caller_frame.f_lineno
-        
-        # Generate unique ID using high-precision timestamp
-        obj_id = f"{time.time():.7f}"
-        
-        # Start with basic metadata
-        metadata = {
-            'id': obj_id,
-            'filename': filename,
-            'lineno': lineno,
-            'timestamp': obj_id,
+        caller = frame.f_back
+        if caller is None:
+            return {}
+            
+        # Skip logger internal frames and decorators
+        while caller:
+            code = caller.f_code
+            if (code.co_filename == __file__ and 
+                code.co_name in ['log', '_trace_context', '_decorator', 'wrapper']):
+                caller = caller.f_back
+            else:
+                break
+                
+        if caller is None:
+            return {}
+            
+        return {
+            'function_name': caller.f_code.co_name,
         }
-        
-        # Add variable name if provided or try to extract it
-        if variable_name:
-            metadata['variable_name'] = variable_name
-        else:
-            frame_locals = caller_frame.f_locals
-            obj_id_mem = id(obj)
-            possible_names = [name for name, value in reversed(list(frame_locals.items())) if id(value) == obj_id_mem]
-            if possible_names:
-                metadata['variable_name'] = possible_names[0]
-        
-        # Add current function context if available
-        if self._metadata_stack:
-            metadata['call_stack'] = self._metadata_stack.copy()
-        
-        # Merge with custom metadata if provided
-        if custom_metadata:
-            metadata.update(custom_metadata)
-        
-        # Write metadata to JSONL file
-        with open(self.metadata_path, 'a') as f:
-            json.dump(metadata, f)
-            f.write('\n')
-        
-        # Store object using shelve
-        with shelve.open(self.objects_path) as shelf:
-            shelf[obj_id] = obj
+
+    def _get_variable_name(self, obj: Any, frame_locals: Dict[str, Any]) -> Optional[str]:
+        """Get the variable name for an object in the given frame locals."""
+        try:
+            obj_id = id(obj)
+            names = [
+                name for name, value in reversed(list(frame_locals.items())) 
+                if id(value) == obj_id
+            ]
+            return names[0] if names else None
+        except Exception:
+            return None
+
+    def log(self, obj: Any, **metadata: Any) -> None:
+        """Log an object with metadata, trace stack, and variable name."""
+        try:
+            timestamp = time.time()
+            obj_id = f"{timestamp:.7f}"
+            
+            # Get caller information
+            caller_info = self._get_caller_info()
+            
+            # Get variable name
+            if frame := inspect.currentframe():
+                if caller := frame.f_back:
+                    if var_name := self._get_variable_name(obj, caller.f_locals):
+                        caller_info['variable_name'] = var_name
+            
+            # Build metadata
+            combined_metadata = {
+                'id': obj_id,
+                **caller_info,
+                **self.base_metadata,
+            }
+            
+            # Add trace stack if available
+            if self._trace_stack:
+                combined_metadata['trace_id'] = self._trace_stack[-1]  # Current trace ID
+                combined_metadata['trace_stack'] = self._trace_stack.copy()  # Full stack
+            
+            # Add call-specific metadata
+            combined_metadata.update(metadata)
+            
+            # Write metadata
+            with open(self.metadata_path, 'a', encoding='utf-8') as f:
+                json.dump(combined_metadata, f)
+                f.write('\n')
+            
+            # Store object
+            with shelve.open(self.objects_path) as shelf:
+                shelf[obj_id] = obj
+                
+        except Exception as e:
+            raise RuntimeError(f"Error logging object: {str(e)}") from e
     
-    def query(self, metadata_query: typing.Dict[str, typing.Any]) -> typing.Iterator[typing.Any]:
+    def query(self, metadata_query: Dict[str, Any]) -> Iterator[Any]:
         """
         Query logged objects based on metadata.
+        Special handling for trace_id to match anywhere in the trace stack.
         """
-        def get_object(obj_id: str) -> typing.Any:
+        def matches_query(metadata: Dict[str, Any], query: Dict[str, Any]) -> bool:
+            for k, v in query.items():
+                if k == 'trace_id':
+                    direct_match = metadata.get('trace_id') == v
+                    stack_match = v in metadata.get('trace_stack', []) 
+                    if not (direct_match or stack_match):
+                        return False
+                else:
+                    # Regular metadata matching
+                    if metadata.get(k) != v:
+                        return False
+            return True
+
+        try:
             with shelve.open(self.objects_path) as shelf:
-                return shelf.get(obj_id)
-
-        def matches_query(metadata: typing.Dict[str, typing.Any], query: typing.Dict[str, typing.Any]) -> bool:
-            """
-            Recursively check if metadata matches query, including the call stack.
-            """
-            # Check direct metadata matches
-            direct_match = all(
-                metadata.get(k) == v 
-                for k, v in query.items()
-            )
-            if direct_match:
-                return True
-                
-            # Check call stack if it exists
-            if 'call_stack' in metadata:
-                # Check each frame in the call stack
-                for frame in metadata['call_stack']:
-                    # Check direct frame metadata
-                    if all(frame.get(k) == v for k, v in query.items()):
-                        return True
-                    
-                    # Check parent metadata if it exists
-                    if 'parent_metadata' in frame:
-                        if matches_query(frame['parent_metadata'], query):
-                            return True
-            return False
-
-        with open(self.metadata_path, 'r') as f:
-            for line in f:
-                metadata = json.loads(line.strip())
-                
-                # Use recursive matching function
-                if matches_query(metadata, metadata_query):
-                    obj_id = metadata['id']
-                    obj = get_object(obj_id)
-                    if obj is not None:
-                        yield obj
+                with open(self.metadata_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        try:
+                            metadata = json.loads(line.strip())
+                            if matches_query(metadata, metadata_query):
+                                obj_id = metadata['id']
+                                
+                                if shelf.get(obj_id, None) is not None:
+                                    yield shelf.get(obj_id)
+                        except json.JSONDecodeError:
+                            continue
+                            
+        except Exception as e:
+            raise RuntimeError(f"Error querying objects: {str(e)}") from e
