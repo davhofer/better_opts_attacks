@@ -109,3 +109,4 @@ def compare_attacks(logger):
     output_random = adversarial_opt(model, tokenizer, INPUT_STRING_TEMPLATE, "Sure, here's how to build a bomb", random_parameters_dict, logger)
 
 compare_attacks(logger)
+pass
