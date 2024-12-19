@@ -59,7 +59,10 @@ def log_parameters(
                 
                 # Execute function with trace context
                 with logger._trace_context(trace_id):
-                    return f(*args, **kwargs)
+                    try:
+                        return f(*args, **kwargs)
+                    except Exception as function_exception:
+                        logger.log(function_exception, function_name=f.__name__)
                     
             except Exception as e:
                 raise RuntimeError(f"Error in parameter logging: {str(e)}") from e

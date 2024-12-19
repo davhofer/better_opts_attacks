@@ -3,6 +3,7 @@ import torch
 import typing
 import random
 import gc
+import experiment_logger
 
 ADV_SUFFIX_INDICATOR = "<ADV_SUFFIX>"
 ADV_PREFIX_INDICATOR = "<ADV_PREFIX>"
@@ -51,6 +52,7 @@ def string_masks(
         optimizable_prefix_end_index = len(retokenized_pre_payload_tokens) - 1
     else:
         raise ValueError("Retokenization of break point between pre-opt-string and payload leads to more than 2 error")
+    payload_start_index = optimizable_prefix_end_index + 1
 
     upto_adv_suf_tokens = torch.cat((retokenized_prefix_plus_payload_tokens, adv_suf_init_tokens)).to(retokenized_prefix_plus_payload_tokens.dtype)
     retokenized_upto_adv_suf_tokens = tokenizer(tokenizer.decode(upto_adv_suf_tokens), add_special_tokens=False, return_tensors="pt")["input_ids"][0]
@@ -60,6 +62,7 @@ def string_masks(
         optimizable_suffix_start_index = len(prefix_plus_payload_tokens) + 1
     else:
         raise ValueError("Retokenization of break point between payload and suf-opt-string leads to more than 2 error")
+    payload_end_index = optimizable_suffix_start_index - 1
 
     upto_suf_suffix_tokens = torch.cat((retokenized_upto_adv_suf_tokens, suf_suffix_tokens)).to(retokenized_upto_adv_suf_tokens.dtype)
     retokenized_upto_suf_suffix_tokens = tokenizer(tokenizer.decode(upto_suf_suffix_tokens), add_special_tokens=False, return_tensors="pt")["input_ids"][0]
@@ -93,8 +96,19 @@ def string_masks(
     
     final_opt_mask = torch.cat((prefix_mask, suffix_mask)).to(prefix_mask.dtype)
     target_string_mask = torch.arange(target_string_start_index, target_string_end_index)
+    payload_mask = torch.arange(payload_start_index, payload_end_index + 1)
 
-    return final_tokens, final_opt_mask, prefix_mask, suffix_mask, target_string_mask, eval_input_mask
+    return {
+        "tokens": final_tokens,
+        "masks": {
+            "optim_mask": final_opt_mask,
+            "prefix_mask": prefix_mask,
+            "suffix_mask": suffix_mask,
+            "target_mask": target_string_mask,
+            "input_mask": eval_input_mask,
+            "payload_mask": payload_mask
+        }
+    }
 
 def DEFAULT_FILTER_FUNCTION(tokens: torch.tensor, **kwargs):
     return True
@@ -219,8 +233,121 @@ def bulk_logits(
                 data_piece_result = model.forward(input_ids=data_piece).logits
             except torch.cuda.OutOfMemoryError:
                 data_piece_result = bulk_logits(model, data_piece, batch_size // 2, generation_params)
-            list_of_results.append(data_piece_result.detach().to("cpu"))
+            list_of_results.append(data_piece)
             del data_piece_result
             gc.collect()
             torch.cuda.empty_cache()
     return torch.cat(list_of_results, dim=0)
+
+def bulk_logits_iter(
+    model: transformers.AutoModelForCausalLM,
+    data: torch.tensor,
+    batch_size=BULK_FORWARD_DEFAULT_BSZ,
+    generation_params=DEFAULT_GENERATION_PARAMS
+):
+    """
+    Iterator version of bulk_logits that yields results one batch at a time
+    to reduce memory usage.
+    """
+    with torch.no_grad():
+        for i in range(0, len(data), batch_size):
+            data_piece = data[i:i + batch_size]
+            try:
+                logits = model.forward(input_ids=data_piece).logits
+                cpu_logits = logits.cpu()
+                del logits
+                gc.collect()
+                torch.cuda.empty_cache()
+                yield cpu_logits
+            except torch.cuda.OutOfMemoryError:
+                # If OOM occurs, recursively process with smaller batch size
+                sub_iterator = bulk_logits_iter(
+                    model, 
+                    data_piece, 
+                    batch_size // 2, 
+                    generation_params
+                )
+                for sub_result in sub_iterator:
+                    yield sub_result
+            
+            # Clean up memory after each batch
+            gc.collect()
+            torch.cuda.empty_cache()
+
+            torch.cuda.synchronize()
+
+def bulk_logits_from_embeds(
+    model: transformers.AutoModelForCausalLM,
+    data: torch.tensor,
+    batch_size=BULK_FORWARD_DEFAULT_BSZ,
+    generation_params=DEFAULT_GENERATION_PARAMS
+):
+    with torch.no_grad():
+        data_split = torch.split(data, BULK_FORWARD_DEFAULT_BSZ)
+        list_of_results = []
+        for data_piece in data_split:
+            try:
+                data_piece_result = model.forward(inputs_embeds=data_piece).logits
+            except torch.cuda.OutOfMemoryError:
+                data_piece_result = bulk_logits_from_embeds(model, data_piece, batch_size // 2, generation_params)
+            list_of_results.append(data_piece_result.detach())
+            del data_piece_result
+            gc.collect()
+            torch.cuda.empty_cache()
+    return torch.cat(list_of_results, dim=0)
+
+def bulk_forward_iter(
+    model: transformers.AutoModelForCausalLM,
+    data: torch.tensor,
+    batch_size=BULK_FORWARD_DEFAULT_BSZ,
+    generation_params=DEFAULT_GENERATION_PARAMS
+) -> typing.Iterator[typing.Tuple[torch.Tensor, typing.Tuple[torch.Tensor, ...]]]:
+    """
+    Iterator that yields both logits and attentions one batch at a time.
+    
+    Returns:
+        Iterator yielding tuples of (logits, attentions) where:
+        - logits: tensor of shape (batch_size, sequence_length, vocab_size)
+        - attentions: tuple of attention tensors for each layer
+    """
+    with torch.no_grad():
+        for i in range(0, len(data), batch_size):
+            data_piece = data[i:i + batch_size]
+            try:
+                output = model.forward(
+                    input_ids=data_piece,
+                    output_attentions=True
+                )
+                yield output.logits, output.attentions
+                
+            except torch.cuda.OutOfMemoryError:
+                # If OOM occurs, recursively process with smaller batch size
+                sub_iterator = bulk_forward_iter(
+                    model, 
+                    data_piece, 
+                    batch_size // 2, 
+                    generation_params
+                )
+                for sub_logits, sub_attentions in sub_iterator:
+                    yield sub_logits, sub_attentions
+            
+            # Clean up memory after each batch
+            gc.collect()
+            torch.cuda.empty_cache()
+
+UNREDUCED_CE_LOSS = torch.nn.CrossEntropyLoss(reduction="none")
+def target_logprobs(
+    model: transformers.AutoModelForCausalLM,
+    tokenizer: transformers.AutoTokenizer,
+    input_points: torch.tensor,
+    masks_data: typing.Dict[str, torch.tensor],
+    target_tokens: torch.tensor,
+    logger: experiment_logger.ExperimentLogger,
+):
+    target_mask = masks_data["target_mask"]
+    losses_list = []
+    for logit_piece in bulk_logits_iter(model, input_points):
+        loss_tensor = UNREDUCED_CE_LOSS(torch.transpose(logit_piece[:, target_mask - 1, :], 1, 2), target_tokens.repeat((logit_piece.shape[0], 1)).to(logit_piece.device)).sum(dim=1)
+        losses_list.append(loss_tensor)
+    loss_tensor = torch.cat(losses_list)
+    return loss_tensor
