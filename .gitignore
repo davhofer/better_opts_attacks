@@ -173,3 +173,4 @@ logs/final_runs/*
 nohup.out
 .vscode
 *.bash
+*.pkl

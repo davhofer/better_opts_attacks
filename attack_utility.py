@@ -5,6 +5,92 @@ import random
 import gc
 import experiment_logger
 
+
+def analyze_conversation_tokens(conversation, tokenizer):
+    """
+    Analyzes tokenization of a conversation using the tokenizer's built-in chat template,
+    separating content tokens from control tokens. Includes generation prompt in the analysis.
+    
+    Args:
+        conversation: List of dictionaries with 'role' and 'content' keys
+        tokenizer: HuggingFace tokenizer instance with chat_template
+    
+    Returns:
+        dict: Contains lists of content token indices and control token indices,
+              along with the full token list and their string representations
+    """
+    # Get the formatted text using the tokenizer's chat template
+    formatted_text = tokenizer.apply_chat_template(
+        conversation,
+        tokenize=False,
+        add_generation_prompt=True
+    )
+    
+    # Track the original content positions
+    content_char_ranges = []
+    for msg in conversation:
+        # Find each content occurrence in the formatted text
+        content = msg["content"]
+        content_start = formatted_text.find(content)
+        while content_start != -1:
+            content_char_ranges.append(
+                (content_start, content_start + len(content))
+            )
+            # Look for any additional occurrences
+            content_start = formatted_text.find(
+                content,
+                content_start + 1
+            )
+    
+    # Tokenize the full text
+    tokens = tokenizer(formatted_text, return_offsets_mapping=True)
+    
+    # Separate content tokens from control tokens
+    content_token_indices = []
+    control_token_indices = []
+    generation_prompt_indices = []
+    
+    # Get the offset mapping
+    offset_mapping = tokens["offset_mapping"]
+    
+    # Find generation prompt location
+    generation_start = len(formatted_text)
+    # Any tokens that start after or at the generation prompt position
+    # should be considered part of the generation prompt
+    
+    # Analyze each token
+    for i, (start, end) in enumerate(offset_mapping):
+        # Special tokens have (0,0) offset
+        if start == end == 0:
+            control_token_indices.append(i)
+            continue
+            
+        # Check if token is part of the generation prompt
+        if start >= generation_start:
+            generation_prompt_indices.append(i)
+            continue
+            
+        # Check if token falls within any content range
+        is_content = False
+        for content_start, content_end in content_char_ranges:
+            # Token is content if it overlaps with content range
+            if not (end <= content_start or start >= content_end):
+                content_token_indices.append(i)
+                is_content = True
+                break
+        
+        if not is_content:
+            control_token_indices.append(i)
+    
+    # Get the actual tokens for reference
+    
+    return {
+        "content_token_indices": content_token_indices,
+        "control_token_indices": control_token_indices,
+        "generation_prompt_indices": generation_prompt_indices,
+        "formatted_text": formatted_text
+    }
+
 ADV_SUFFIX_INDICATOR = "<ADV_SUFFIX>"
 ADV_PREFIX_INDICATOR = "<ADV_PREFIX>"
 def string_masks(
@@ -97,6 +183,7 @@ def string_masks(
     final_opt_mask = torch.cat((prefix_mask, suffix_mask)).to(prefix_mask.dtype)
     target_string_mask = torch.arange(target_string_start_index, target_string_end_index)
     payload_mask = torch.arange(payload_start_index, payload_end_index + 1)
+    
 
     return {
         "tokens": final_tokens,
@@ -107,6 +194,197 @@ def string_masks(
             "target_mask": target_string_mask,
             "input_mask": eval_input_mask,
             "payload_mask": payload_mask
+        }
+    }
+
+def find_clean_token_span(tokenizer: transformers.PreTrainedTokenizer, 
+                         full_text: str,
+                         target_text: str,
+                         full_tokens: typing.List[int]) -> None | typing.Dict[str, typing.Any]:
+    """
+    Find the largest contiguous sequence of tokens that cleanly maps to a substring of target_text.
+    """
+    # Get the token ids and offsets for the full text
+    encoding = tokenizer(full_text, return_offsets_mapping=True, add_special_tokens=False)
+    char_spans = encoding.offset_mapping
+    
+    # Find the character positions of target_text in full_text
+    start_pos = full_text.find(target_text)
+    if start_pos == -1:
+        return None
+    end_pos = start_pos + len(target_text)
+    
+    # Find token spans that fall within these character positions
+    token_start = None
+    token_end = None
+    
+    for i, (start, end) in enumerate(char_spans):
+        # Token completely within target_text
+        if start >= start_pos and end <= end_pos:
+            if token_start is None:
+                token_start = i
+            token_end = i + 1
+    
+    if token_start is None:
+        return None
+        
+    # Verify the decoded tokens match a substring of target_text
+    span_tokens = full_tokens[token_start:token_end]
+    decoded = tokenizer.decode(span_tokens)
+    
+    assert decoded in target_text, "Decoded string not a subset of target_text"
+    return {
+        "start": token_start,
+        "end": token_end,
+        "text": decoded
+    }
+
+def conversation_masks(
+    tokenizer: transformers.PreTrainedTokenizer,
+    conversation: typing.List[typing.Dict[str, str]],
+    adv_prefix_init: str,
+    adv_suffix_init: str,
+    target_string: str,
+    prefix_placeholder: str = "<ADV_PREFIX>",
+    suffix_placeholder: str = "<ADV_SUFFIX>"
+) -> typing.Dict[str, typing.Any]:
+    """
+    Create masks for different parts of a tokenized conversation.
+    
+    Args:
+        tokenizer: HuggingFace tokenizer
+        conversation: List of dictionaries with 'role' and 'content' keys
+        adv_prefix_init: String to replace prefix_placeholder
+        adv_suffix_init: String to replace suffix_placeholder
+        target_string: Target string to be appended after the conversation
+        prefix_placeholder: Placeholder for prefix in the content
+        suffix_placeholder: Placeholder for suffix in the content
+    
+    Returns:
+        Dictionary containing tokens and various masks
+    """
+    # First, process the conversation by replacing placeholders
+    processed_conversation = []
+    for turn in conversation:
+        content = turn['content']
+        
+        # Replace placeholders in content
+        if prefix_placeholder in content and suffix_placeholder in content:
+            prefix_pos = content.find(prefix_placeholder)
+            suffix_pos = content.find(suffix_placeholder)
+            
+            content = (
+                content[:prefix_pos] + 
+                adv_prefix_init + 
+                content[prefix_pos + len(prefix_placeholder):suffix_pos] + 
+                adv_suffix_init + 
+                content[suffix_pos + len(suffix_placeholder):]
+            )
+        
+        processed_conversation.append({
+            "role": turn['role'],
+            "content": content
+        })
+    
+    full_text = tokenizer.apply_chat_template(
+        processed_conversation,  # Exclude the target string message
+        tokenize=False,
+        add_generation_prompt=True,    # Let the tokenizer handle the generation prompt
+    ) + target_string  # Add target string separately to maintain control over its position
+    
+    # Tokenize the conversation without the target string first
+    conversation_tokens = tokenizer(
+        tokenizer.apply_chat_template(
+            processed_conversation,
+            tokenize=False,
+            add_generation_prompt=True
+        ),
+        return_offsets_mapping=True,
+        add_special_tokens=False
+    )
+    
+    # Tokenize the target string separately
+    target_tokens = tokenizer(
+        target_string,
+        return_offsets_mapping=True,
+        add_special_tokens=False  # No special tokens for target as they're already in the conversation
+    )
+    
+    # Combine tokens
+    final_tokens = conversation_tokens['input_ids'] + target_tokens['input_ids']
+    final_tokens = torch.tensor(final_tokens)
+
+    # Combine offset mappings, adjusting target offsets
+    last_offset = len(full_text) - len(target_string)
+    target_offsets = [(start + last_offset, end + last_offset) 
+                     for start, end in target_tokens.offset_mapping]
+    char_spans = conversation_tokens.offset_mapping + target_offsets
+    
+    # Initialize masks
+    seq_length = len(final_tokens)
+    prefix_mask = torch.zeros(seq_length, dtype=torch.bool)
+    suffix_mask = torch.zeros(seq_length, dtype=torch.bool)
+    content_mask = torch.zeros(seq_length, dtype=torch.bool)
+    target_mask = torch.zeros(seq_length, dtype=torch.bool)
+    
+    # Find clean token spans for prefix and suffix
+    prefix_span = find_clean_token_span(tokenizer, full_text, adv_prefix_init, final_tokens)
+    suffix_span = find_clean_token_span(tokenizer, full_text, adv_suffix_init, final_tokens)
+    
+    if prefix_span:
+        prefix_mask[prefix_span["start"]:prefix_span["end"]] = True
+    if suffix_span:
+        suffix_mask[suffix_span["start"]:suffix_span["end"]] = True
+    
+    # Create content mask - we'll identify content by finding non-template parts in each message
+    for turn in processed_conversation:  # Exclude target message
+        turn_text = turn['content']
+        # Find this content in the full text and create mask for its tokens
+        start_pos = full_text.find(turn_text)
+        if start_pos != -1:
+            end_pos = start_pos + len(turn_text)
+            for i, (start, end) in enumerate(char_spans):
+                if start >= start_pos and end <= end_pos:
+                    content_mask[i] = True
+    
+    # Create payload mask (between prefix and suffix)
+    if prefix_span and suffix_span:
+        payload_mask = torch.zeros(seq_length, dtype=torch.bool)
+        payload_mask[prefix_span["end"]:suffix_span["start"]] = True
+    else:
+        payload_mask = torch.zeros(seq_length, dtype=torch.bool)
+    
+    # Create target mask
+    target_start = len(full_text) - len(target_string)
+    for i, (start, end) in enumerate(char_spans):
+        if start >= target_start:
+            target_mask[i] = True
+    
+    # Create input mask (everything before target)
+    input_mask = torch.ones(seq_length, dtype=torch.bool)
+    input_mask[target_mask.nonzero()] = False
+    
+    control_mask = ~(content_mask | target_mask)
+
+    prefix_indices = torch.where(prefix_mask)[0]
+    suffix_indices = torch.where(suffix_mask)[0]
+    payload_indices = torch.where(payload_mask)[0]
+    target_indices = torch.where(target_mask)[0]
+    input_indices = torch.where(input_mask)[0]
+    content_indices = torch.where(content_mask)[0]
+    control_indices = torch.where(control_mask)[0]
+
+    return {
+        "tokens": final_tokens,
+        "masks": {
+            "optim_mask": torch.cat([prefix_indices, suffix_indices]),
+            "prefix_mask": prefix_indices,
+            "suffix_mask": suffix_indices,
+            "payload_mask": payload_indices,
+            "target_mask": target_indices,
+            "input_mask": input_indices,
+            "content_mask": content_indices,
+            "control_mask": control_indices
         }
     }
 
@@ -269,6 +547,9 @@ def bulk_logits_iter(
                 )
                 for sub_result in sub_iterator:
                     yield sub_result
+                    del sub_result
+                    gc.collect()
+                    torch.cuda.empty_cache()
             
             # Clean up memory after each batch
             gc.collect()
@@ -330,6 +611,9 @@ def bulk_forward_iter(
                 )
                 for sub_logits, sub_attentions in sub_iterator:
                     yield sub_logits, sub_attentions
+                    del sub_logits, sub_attentions
+                    gc.collect()
+                    torch.cuda.empty_cache()
             
             # Clean up memory after each batch
             gc.collect()
