@@ -4,6 +4,7 @@ import typing
 import datetime
 import json
 import time
+import bitsandbytes
 
 import gcg
 import attack_utility
@@ -133,7 +134,8 @@ def attack_purplellama_indirect(example_num,
 
 if __name__ == "__main__":
     MODEL_PATH = "/data/models/hf/Meta-Llama-3-8B-Instruct"
-    model = transformers.AutoModelForCausalLM.from_pretrained(MODEL_PATH, device_map="auto", torch_dtype=torch.bfloat16)
+    quantization_config = transformers.BitsAndBytesConfig(load_in_4bit=True)
+    model = transformers.AutoModelForCausalLM.from_pretrained(MODEL_PATH, device_map="auto", quantization_config=quantization_config)
     tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_PATH)
     model.generation_config.pad_token_id = tokenizer.pad_token_id
 

@@ -170,7 +170,9 @@ cython_debug/
 logs/defaults/*
 logs/runs/*
 logs/final_runs/*
+logs/debug_logs/*
 nohup.out
 .vscode
 *.bash
 *.pkl
+logs/runs2/*
