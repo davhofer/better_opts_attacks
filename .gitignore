@@ -167,12 +167,8 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-logs/defaults/*
-logs/runs/*
-logs/final_runs/*
-logs/debug_logs/*
-nohup.out
 .vscode
 *.bash
 *.pkl
-logs/runs2/*
+logs/*
+*.out

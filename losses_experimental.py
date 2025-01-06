@@ -21,7 +21,9 @@ def attention_weight_signal_v1(
     input_points,
     masks_data,
     topk,
-    logger: experiment_logger.ExperimentLogger    
+    logger: experiment_logger.ExperimentLogger,
+    *,
+    layer_weight_strategy: str = "uniform"
 ):
     optim_mask: torch.tensor = masks_data["optim_mask"]
     target_mask: torch.tensor = masks_data["target_mask"]
@@ -34,11 +36,75 @@ def attention_weight_signal_v1(
     model_output = model(inputs_embeds=inputs_embeds, output_attentions=True, return_dict=True)
     attentions = model_output.attentions
     relevant_attentions = torch.stack([layer_attention[0, :, target_mask][:, :, payload_mask] for layer_attention in attentions])
-    final_tensor = relevant_attentions.sum()
+    if layer_weight_strategy == "uniform":
+        final_tensor = relevant_attentions.sum()
+    elif layer_weight_strategy == "only_last":
+        final_tensor = relevant_attentions[-1].sum()
+    elif layer_weight_strategy == "only_first":
+        final_tensor = relevant_attentions[0].sum()
+    elif layer_weight_strategy == "increasing":
+        num_weights = relevant_attentions.shape[0]
+        weights_tensor = torch.tensor(list(range(num_weights))) + 1
+        final_tensor = (weights_tensor.view(num_weights, 1, 1, 1).to(relevant_attentions.device) * relevant_attentions).sum()
+    elif layer_weight_strategy == "decreasing":
+        num_weights = relevant_attentions.shape[0]
+        weights_tensor = torch.tensor(list(reversed(list(range(num_weights))))) + 1
+        final_tensor = (weights_tensor.view(num_weights, 1, 1, 1).to(relevant_attentions.device) * relevant_attentions).sum()
+    else:
+        raise ValueError(f"layer_weight_strategy parameter {layer_weight_strategy} not recognized")
     final_tensor.backward()
     grad_optims = (one_hot_tensor.grad[optim_mask, :])
     best_tokens_indices = grad_optims.topk(topk, dim=-1).indices
     return best_tokens_indices
+
+@experiment_logger.log_parameters(exclude=["model", "tokenizer"])
+def attention_weight_signal_v2(
+    model: transformers.AutoModelForCausalLM,
+    tokenizer: transformers.AutoTokenizer,
+    input_points,
+    masks_data,
+    topk,
+    logger: experiment_logger.ExperimentLogger,
+    *,
+    layer_weight_strategy: str = "uniform"
+):
+    # Key difference from attention_weight_signal_v1 is the mask on which attention is maximized.
+    optim_mask: torch.tensor = masks_data["optim_mask"]
+    target_mask: torch.tensor = masks_data["target_mask"]
+    payload_mask: torch.tensor = masks_data["payload_mask"]
+    control_mask: torch.tensor = masks_data["control_mask"]
+    
+    # Key difference from the attention_weight_signal_v1 line
+    attention_mask: torch.tensor = torch.cat([payload_mask, control_mask])
+
+    one_hot_tensor = torch.nn.functional.one_hot(input_points.clone().detach(), num_classes=len(tokenizer.vocab)).to(dtype=model.dtype)
+    one_hot_tensor.requires_grad_()
+    embedding_tensor = model.get_input_embeddings().weight[:len(tokenizer.vocab)]
+    inputs_embeds = torch.unsqueeze(one_hot_tensor.to(embedding_tensor.device) @ embedding_tensor, 0)
+    model_output = model(inputs_embeds=inputs_embeds, output_attentions=True, return_dict=True)
+    attentions = model_output.attentions
+    relevant_attentions = torch.stack([layer_attention[0, :, target_mask][:, :, attention_mask] for layer_attention in attentions])
+    if layer_weight_strategy == "uniform":
+        final_tensor = relevant_attentions.sum()
+    elif layer_weight_strategy == "only_last":
+        final_tensor = relevant_attentions[-1].sum()
+    elif layer_weight_strategy == "only_first":
+        final_tensor = relevant_attentions[0].sum()
+    elif layer_weight_strategy == "increasing":
+        num_weights = relevant_attentions.shape[0]
+        weights_tensor = torch.tensor(list(range(num_weights))) + 1
+        final_tensor = (weights_tensor.view(num_weights, 1, 1, 1).to(relevant_attentions.device) * relevant_attentions).sum()
+    elif layer_weight_strategy == "decreasing":
+        num_weights = relevant_attentions.shape[0]
+        weights_tensor = torch.tensor(list(reversed(list(range(num_weights))))) + 1
+        final_tensor = (weights_tensor.view(num_weights, 1, 1, 1).to(relevant_attentions.device) * relevant_attentions).sum()
+    else:
+        raise ValueError(f"layer_weight_strategy parameter {layer_weight_strategy} not recognized")
+    final_tensor.backward()
+    grad_optims = (one_hot_tensor.grad[optim_mask, :])
+    best_tokens_indices = grad_optims.topk(topk, dim=-1).indices
+    return best_tokens_indices
+
 
 @experiment_logger.log_parameters(exclude=["model", "tokenizer"])
 def adversarial_opt(
@@ -57,6 +123,7 @@ def adversarial_opt(
     elif isinstance(input_template, list):
         input_tokenized_data = attack_utility.conversation_masks(tokenizer, input_template, adv_prefix_init, adv_suffix_init, target_output_str)
 
+
     attack_algorithm = adversarial_parameters_dict["attack_algorithm"]
     if attack_algorithm == "gcg":
         loss_sequences, best_output_sequences = gcg.gcg(model, tokenizer, input_tokenized_data, adversarial_parameters_dict["attack_hyperparameters"], logger)
@@ -64,7 +131,21 @@ def adversarial_opt(
         logger.log(best_output_sequences)
         return loss_sequences, best_output_sequences
     elif attack_algorithm == "custom_gcg":
-        logprobs_sequences, best_output_sequences = gcg.custom_gcg(model, tokenizer, input_tokenized_data, adversarial_parameters_dict["attack_hyperparameters"], logger)
+        early_stop = adversarial_parameters_dict.get("early_stop", True)
+        eval_every_step = adversarial_parameters_dict.get("eval_every_step", True),
+        identical_outputs_before_stop = adversarial_parameters_dict.get("identical_outputs_before_stop", 5)
+        generation_config = adversarial_parameters_dict.get("generation_config", gcg.DEFAULT_GENERATION_CONFIG)
+
+        logprobs_sequences, best_output_sequences = gcg.custom_gcg(model,
+            tokenizer,
+            input_tokenized_data,
+            adversarial_parameters_dict["attack_hyperparameters"],
+            logger,
+            early_stop=early_stop,
+            eval_every_step=eval_every_step,
+            identical_outputs_before_stop=identical_outputs_before_stop,
+            generation_config=generation_config
+        )
         logger.log(logprobs_sequences)
         logger.log(best_output_sequences)
         return logprobs_sequences, best_output_sequences
@@ -109,20 +190,69 @@ def attack_purplellama_indirect(example_num,
         "signal_function": attention_weight_signal_v1,
         "max_steps": 400,
         "topk": 256,
-        "forward_eval_candidates": 512
+        "forward_eval_candidates": 512,
+        "signal_kwargs": {
+            "layer_weight_strategy": "decreasing"
+        }
     }
-
 
     adversarial_parameters_dict_2 = {
         "init_config": initial_config_1,
         "attack_algorithm": "custom_gcg",
-        "attack_hyperparameters": custom_gcg_hyperparameters_2
+        "attack_hyperparameters": custom_gcg_hyperparameters_2,
+        "early_stop": False,
+        "eval_every_step": True
     }
 
     logger.log(adversarial_parameters_dict_2, example_num=example_num)
     loss_sequences, best_output_sequences = adversarial_opt(model, tokenizer, input_conversation, target_string, adversarial_parameters_dict_2, logger)
     logger.log(loss_sequences, example_num=example_num)
     logger.log(best_output_sequences, example_num=example_num)
+
+    custom_gcg_hyperparameters_3 = {
+        "signal_function": attention_weight_signal_v1,
+        "max_steps": 400,
+        "topk": 256,
+        "forward_eval_candidates": 512,
+        "signal_kwargs": {
+            "layer_weight_strategy": "increasing"
+        }
+    }
+
+    adversarial_parameters_dict_3 = {
+        "init_config": initial_config_1,
+        "attack_algorithm": "custom_gcg",
+        "attack_hyperparameters": custom_gcg_hyperparameters_3,
+        "early_stop": False,
+        "eval_every_step": True
+    }
+
+    logger.log(adversarial_parameters_dict_3, example_num=example_num)
+    loss_sequences, best_output_sequences = adversarial_opt(model, tokenizer, input_conversation, target_string, adversarial_parameters_dict_3, logger)
+    logger.log(loss_sequences, example_num=example_num)
+    logger.log(best_output_sequences, example_num=example_num)
+
+    custom_gcg_hyperparameters_4 = {
+        "signal_function": gcg.og_gcg_signal,
+        "max_steps": 400,
+        "topk": 256,
+        "forward_eval_candidates": 512,
+    }
+
+    adversarial_parameters_dict_4 = {
+        "init_config": initial_config_1,
+        "attack_algorithm": "custom_gcg",
+        "attack_hyperparameters": custom_gcg_hyperparameters_4,
+        "early_stop": False,
+        "eval_every_step": True
+    }
+
+    logger.log(adversarial_parameters_dict_4, example_num=example_num)
+    loss_sequences, best_output_sequences = adversarial_opt(model, tokenizer, input_conversation, target_string, adversarial_parameters_dict_4, logger)
+    logger.log(loss_sequences, example_num=example_num)
+    logger.log(best_output_sequences, example_num=example_num)
+
+
 
 
 if __name__ == "__main__":
@@ -134,6 +264,6 @@ if __name__ == "__main__":
     for i in range(5):
         for rand_restart in range(5):
             expt_id = f"run_{str(datetime.datetime.now()).replace("-","").replace(" ","").replace(":","").replace(".","")}"
-            logger = experiment_logger.ExperimentLogger(f"logs/runs2/{expt_id}")
+            logger = experiment_logger.ExperimentLogger(f"logs/runs4/{expt_id}")
             logger.log(model.__repr__(), example_num=i, rand_restart=rand_restart)
             attack_purplellama_indirect(i, model, tokenizer, logger)

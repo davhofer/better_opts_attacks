@@ -153,10 +153,10 @@ def custom_gcg(
     custom_gcg_hyperparams: typing.Dict,
     logger: experiment_logger.ExperimentLogger,
     *,
-    eval_every_step = True,
-    early_stop = True,
-    identical_outputs_before_stop = 5,
-    generation_config = DEFAULT_GENERATION_CONFIG
+    eval_every_step,
+    early_stop,
+    identical_outputs_before_stop,
+    generation_config
 ):
 
     input_tokens: torch.tensor = input_tokenized_data["tokens"]
@@ -168,14 +168,28 @@ def custom_gcg(
     signal_function = custom_gcg_hyperparams.get("signal_function", og_gcg_signal)
     true_loss_function = custom_gcg_hyperparams.get("true_loss_function", attack_utility.target_logprobs)
     substitution_validity_function = custom_gcg_hyperparams.get("substitution_function", None)
-    
+    signal_kwargs = custom_gcg_hyperparams.get("signal_kwargs", None)
+
     current_best_tokens = input_tokens.clone()
     best_output_sequences = []
     logprobs_sequences = []
     successive_correct_outputs = 0
+
+    initial_true_loss = true_loss_function(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger)[0]
+    logger.log(initial_true_loss, step_num=-1)
+    best_output_sequences.append(current_best_tokens.clone())
+    logger.log(current_best_tokens, step_num=-1)
+    initial_logprobs = attack_utility.target_logprobs(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger)
+    initial_logprobs = initial_logprobs.item()
+    logger.log(initial_logprobs, step_num=-1)
+    logprobs_sequences.append(initial_logprobs)
+    generated_output_tokens = model.generate(torch.unsqueeze(current_best_tokens[eval_input_mask], dim=0), attention_mask=torch.unsqueeze(torch.ones(current_best_tokens[eval_input_mask].shape), dim=0), **generation_config)
+    generated_output_string = tokenizer.batch_decode(generated_output_tokens[:, eval_input_mask[-1] + 1 :])[0]
+    logger.log(generated_output_string, step_num=-1)
+
     for step_num in range(custom_gcg_hyperparams["max_steps"]):
 
-        best_tokens_indices = signal_function(model, tokenizer, current_best_tokens, masks_data, custom_gcg_hyperparams["topk"], logger)
+        best_tokens_indices = signal_function(model, tokenizer, current_best_tokens, masks_data, custom_gcg_hyperparams["topk"], logger, **(signal_kwargs or {}))
 
         indices_to_sample = set()
         indices_to_exclude = set()
