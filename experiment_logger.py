@@ -7,6 +7,7 @@ import functools
 from pathlib import Path
 import contextlib
 from typing import Any, Dict, Optional, Iterator, Callable, TypeVar, Union, cast
+import traceback
 
 T = TypeVar('T', bound=Callable[..., Any])
 
@@ -62,6 +63,7 @@ def log_parameters(
                     try:
                         return f(*args, **kwargs)
                     except Exception as function_exception:
+                        traceback.print_exc()
                         logger.log(function_exception, function_name=f.__name__)
                     
             except Exception as e:

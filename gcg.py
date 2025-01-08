@@ -5,6 +5,7 @@ import numpy as np
 import attack_utility
 import random
 import experiment_logger
+import gc
 
 
 GCG_LOSS_FUNCTION = attack_utility.UNREDUCED_CE_LOSS
@@ -149,7 +150,7 @@ def rand_gcg_signal(
 def custom_gcg(
     model: transformers.AutoModelForCausalLM,
     tokenizer: transformers.AutoTokenizer,
-    input_tokenized_data: typing.Tuple[torch.tensor, torch.tensor, torch.tensor, torch.tensor, torch.tensor, torch.tensor],
+    input_tokenized_data: typing.Dict,
     custom_gcg_hyperparams: typing.Dict,
     logger: experiment_logger.ExperimentLogger,
     *,
@@ -169,13 +170,14 @@ def custom_gcg(
     true_loss_function = custom_gcg_hyperparams.get("true_loss_function", attack_utility.target_logprobs)
     substitution_validity_function = custom_gcg_hyperparams.get("substitution_function", None)
     signal_kwargs = custom_gcg_hyperparams.get("signal_kwargs", None)
+    true_loss_kwargs = custom_gcg_hyperparams.get("true_loss_kwargs", None)
 
     current_best_tokens = input_tokens.clone()
     best_output_sequences = []
     logprobs_sequences = []
     successive_correct_outputs = 0
 
-    initial_true_loss = true_loss_function(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger)[0]
+    initial_true_loss = true_loss_function(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger, **(true_loss_kwargs or {}))
     logger.log(initial_true_loss, step_num=-1)
     best_output_sequences.append(current_best_tokens.clone())
     logger.log(current_best_tokens, step_num=-1)
@@ -190,7 +192,7 @@ def custom_gcg(
     for step_num in range(custom_gcg_hyperparams["max_steps"]):
 
         best_tokens_indices = signal_function(model, tokenizer, current_best_tokens, masks_data, custom_gcg_hyperparams["topk"], logger, **(signal_kwargs or {}))
-
+        
         indices_to_sample = set()
         indices_to_exclude = set()
         substitutions_set = set()
@@ -209,8 +211,10 @@ def custom_gcg(
             else:
                 indices_to_exclude.add((first_coordinate, second_coordinate))
         substitution_data = torch.stack(list(substitutions_set))
-        
-        true_losses = true_loss_function(model, tokenizer, substitution_data, masks_data, input_tokens[target_mask], logger)
+        del best_tokens_indices
+        gc.collect()
+        torch.cuda.empty_cache()
+        true_losses = true_loss_function(model, tokenizer, substitution_data, masks_data, input_tokens[target_mask], logger, **(true_loss_kwargs or {}))
         current_best_true_loss = true_losses[torch.argmin(true_losses)]
         logger.log(current_best_true_loss, step_num=step_num)
         current_best_tokens = substitution_data[torch.argmin(true_losses)].clone()

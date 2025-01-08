@@ -1,4 +1,3 @@
-# %%
 import torch
 import transformers
 import json
@@ -7,12 +6,137 @@ import pickle as pkl
 from contextlib import contextmanager
 import time
 import datetime
+import gc
 
 import attack_utility
 import experiment_logger
 
 import gcg
 
+def process_batch_attentions(
+    model: transformers.AutoModelForCausalLM,
+    tokenizer: transformers.AutoTokenizer,
+    input_points: torch.Tensor,
+    target_mask: torch.Tensor,
+    attention_mask: torch.Tensor,
+    start_idx: int,
+    end_idx: int,
+    layer_weight_strategy: str,
+) -> float:
+    """
+    Process a batch of data, automatically splitting if OOM occurs.
+    Returns the accumulated attention weight loss for the batch.
+    
+    Args:
+        model: The transformer model
+        tokenizer: The tokenizer
+        input_points: Input token indices
+        target_mask: Mask indicating target positions (full sequence)
+        attention_mask: Mask indicating positions to attend to (full sequence)
+        start_idx: Start index of current batch
+        end_idx: End index of current batch
+        layer_weight_strategy: Strategy for weighting attention layers
+    """
+    input_points.requires_grad_(False)
+    batch_input_points = input_points[start_idx:end_idx]
+    
+    with torch.no_grad():
+        gc.collect()
+        torch.cuda.synchronize()   
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()   
+        # Get embeddings
+        batch_inputs_embeds = model.get_input_embeddings()(batch_input_points)
+        
+        # Forward pass for the batch
+        try:
+            batch_output = model(
+                inputs_embeds=batch_inputs_embeds,
+                output_attentions=True,
+                output_hidden_states=False,
+                return_dict=True,
+                use_cache=False
+            )
+        except (RuntimeError, torch.cuda.OutOfMemoryError):
+            if end_idx - start_idx <= 1:
+                raise torch.cuda.OutOfMemoryError("Cannot process even a single sample")
+            
+            del batch_inputs_embeds
+            gc.collect()
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
+            # Split batch in half and process recursively
+            mid_idx = start_idx + (end_idx - start_idx) // 2
+            first_half = process_batch_attentions(
+                model, tokenizer, input_points, target_mask, attention_mask,
+                start_idx, mid_idx, layer_weight_strategy
+            )
+            gc.collect()
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()   
+
+            second_half = process_batch_attentions(
+                model, tokenizer, input_points, target_mask, attention_mask,
+                mid_idx, end_idx, layer_weight_strategy
+            )
+            gc.collect()
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
+            return torch.cat((first_half, second_half), dim=0)
+        
+        batch_attentions = batch_output.attentions
+        
+        # Process attention outputs based on strategy
+        if layer_weight_strategy == "uniform":
+            batch_final = torch.stack((
+                layer_attention[
+                    :,
+                    :,
+                    target_mask - 1
+                ][..., attention_mask].sum(dim=[1,2,3])
+                for layer_attention in batch_attentions
+            )).sum(dim=0)
+        elif layer_weight_strategy == "only_last":
+            batch_final = batch_attentions[-1][
+                :,
+                :,
+                target_mask - 1
+            ][..., attention_mask].sum(dim=[1,2,3])
+        elif layer_weight_strategy == "only_first":
+            batch_final = batch_attentions[0][
+                :,
+                :,
+                target_mask - 1
+            ][..., attention_mask].sum(dim=[1,2,3])
+        elif layer_weight_strategy in ("increasing", "decreasing"):
+            num_weights = len(batch_attentions)
+            weights = range(1, num_weights + 1)
+            if layer_weight_strategy == "decreasing":
+                weights = reversed(weights)
+            batch_final = torch.stack((
+                weight * layer_attention[
+                    :,
+                    :,
+                    target_mask - 1
+                ][..., attention_mask].sum(dim=[1,2,3])
+                for weight, layer_attention in zip(weights, batch_attentions)
+            )).sum(dim=0)
+                    
+        # Clean up
+
+        del batch_attentions
+        del batch_output
+        del batch_inputs_embeds
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        return batch_final
+        
 
 @experiment_logger.log_parameters(exclude=["model", "tokenizer"])
 def attention_weight_signal_v1(
@@ -23,11 +147,18 @@ def attention_weight_signal_v1(
     topk,
     logger: experiment_logger.ExperimentLogger,
     *,
-    layer_weight_strategy: str = "uniform"
+    layer_weight_strategy: str = "uniform",
+    attention_mask_strategy: str = "payload_only"
 ):
     optim_mask: torch.tensor = masks_data["optim_mask"]
     target_mask: torch.tensor = masks_data["target_mask"]
     payload_mask: torch.tensor = masks_data["payload_mask"]
+    control_mask: torch.tensor = masks_data["control_mask"]
+
+    if attention_mask_strategy == "payload_only":
+        attention_mask = payload_mask
+    elif attention_mask_strategy == "payload_and_control":
+        attention_mask = torch.cat(payload_mask, control_mask)
 
     one_hot_tensor = torch.nn.functional.one_hot(input_points.clone().detach(), num_classes=len(tokenizer.vocab)).to(dtype=model.dtype)
     one_hot_tensor.requires_grad_()
@@ -35,7 +166,7 @@ def attention_weight_signal_v1(
     inputs_embeds = torch.unsqueeze(one_hot_tensor.to(embedding_tensor.device) @ embedding_tensor, 0)
     model_output = model(inputs_embeds=inputs_embeds, output_attentions=True, return_dict=True)
     attentions = model_output.attentions
-    relevant_attentions = torch.stack([layer_attention[0, :, target_mask][:, :, payload_mask] for layer_attention in attentions])
+    relevant_attentions = torch.stack([layer_attention[0, :, target_mask - 1][:, :, attention_mask] for layer_attention in attentions])
     if layer_weight_strategy == "uniform":
         final_tensor = relevant_attentions.sum()
     elif layer_weight_strategy == "only_last":
@@ -57,8 +188,7 @@ def attention_weight_signal_v1(
     best_tokens_indices = grad_optims.topk(topk, dim=-1).indices
     return best_tokens_indices
 
-@experiment_logger.log_parameters(exclude=["model", "tokenizer"])
-def attention_weight_signal_v2(
+def attention_weight_loss_v1(
     model: transformers.AutoModelForCausalLM,
     tokenizer: transformers.AutoTokenizer,
     input_points,
@@ -66,45 +196,33 @@ def attention_weight_signal_v2(
     topk,
     logger: experiment_logger.ExperimentLogger,
     *,
-    layer_weight_strategy: str = "uniform"
+    layer_weight_strategy: str = "uniform",
+    attention_mask_strategy: str = "payload_only",
 ):
-    # Key difference from attention_weight_signal_v1 is the mask on which attention is maximized.
-    optim_mask: torch.tensor = masks_data["optim_mask"]
+    """
+    Compute attention weight loss with dynamic batching that automatically adjusts
+    to available memory. Maintains the same API and semantics as the original function.
+    
+    The function starts with the initial_batch_size and automatically reduces batch size
+    when OOM occurs, processing data in appropriately-sized chunks.
+    """
+
     target_mask: torch.tensor = masks_data["target_mask"]
     payload_mask: torch.tensor = masks_data["payload_mask"]
     control_mask: torch.tensor = masks_data["control_mask"]
+
+    if attention_mask_strategy == "payload_only":
+        attention_mask = payload_mask
+    elif attention_mask_strategy == "payload_and_control":
+        attention_mask = torch.cat(payload_mask, control_mask)
     
-    # Key difference from the attention_weight_signal_v1 line
-    attention_mask: torch.tensor = torch.cat([payload_mask, control_mask])
+    seq_length = input_points.shape[0]
 
-    one_hot_tensor = torch.nn.functional.one_hot(input_points.clone().detach(), num_classes=len(tokenizer.vocab)).to(dtype=model.dtype)
-    one_hot_tensor.requires_grad_()
-    embedding_tensor = model.get_input_embeddings().weight[:len(tokenizer.vocab)]
-    inputs_embeds = torch.unsqueeze(one_hot_tensor.to(embedding_tensor.device) @ embedding_tensor, 0)
-    model_output = model(inputs_embeds=inputs_embeds, output_attentions=True, return_dict=True)
-    attentions = model_output.attentions
-    relevant_attentions = torch.stack([layer_attention[0, :, target_mask][:, :, attention_mask] for layer_attention in attentions])
-    if layer_weight_strategy == "uniform":
-        final_tensor = relevant_attentions.sum()
-    elif layer_weight_strategy == "only_last":
-        final_tensor = relevant_attentions[-1].sum()
-    elif layer_weight_strategy == "only_first":
-        final_tensor = relevant_attentions[0].sum()
-    elif layer_weight_strategy == "increasing":
-        num_weights = relevant_attentions.shape[0]
-        weights_tensor = torch.tensor(list(range(num_weights))) + 1
-        final_tensor = (weights_tensor.view(num_weights, 1, 1, 1).to(relevant_attentions.device) * relevant_attentions).sum()
-    elif layer_weight_strategy == "decreasing":
-        num_weights = relevant_attentions.shape[0]
-        weights_tensor = torch.tensor(list(reversed(list(range(num_weights))))) + 1
-        final_tensor = (weights_tensor.view(num_weights, 1, 1, 1).to(relevant_attentions.device) * relevant_attentions).sum()
-    else:
-        raise ValueError(f"layer_weight_strategy parameter {layer_weight_strategy} not recognized")
-    final_tensor.backward()
-    grad_optims = (one_hot_tensor.grad[optim_mask, :])
-    best_tokens_indices = grad_optims.topk(topk, dim=-1).indices
-    return best_tokens_indices
-
+    final_result = process_batch_attentions(
+        model, tokenizer, input_points, target_mask, attention_mask,
+        0, seq_length, layer_weight_strategy
+    )    
+    return -final_result
 
 @experiment_logger.log_parameters(exclude=["model", "tokenizer"])
 def adversarial_opt(
@@ -151,16 +269,15 @@ def adversarial_opt(
         return logprobs_sequences, best_output_sequences
 
 @experiment_logger.log_parameters(exclude=["model", "tokenizer"])
-def attack_purplellama_indirect(example_num,
+def attack_purplellama_indirect(
+    purplellama_data,
+    example_num,
     model: transformers.AutoModelForCausalLM,
     tokenizer: transformers.AutoTokenizer,
     logger: experiment_logger.ExperimentLogger,
     *,
     add_eot_to_target=True
 ):
-    with open(f"data/purplellama_indirect.json", "r") as purplellama_indirect_file:
-        purplellama_data = json.load(purplellama_indirect_file)
-    
     purplellama_example = purplellama_data[example_num]
     input_conversation = [
             {
@@ -178,7 +295,7 @@ def attack_purplellama_indirect(example_num,
         if "lama" in model.__repr__():
             target_string = target_string + "<|eot_id|>"
     
-    initial_config_1 = {
+    initial_config = {
         "strategy_type": "random",
         "prefix_length": 25,
         "suffix_length": 25,
@@ -186,18 +303,52 @@ def attack_purplellama_indirect(example_num,
     }
 
     
-    custom_gcg_hyperparameters_2 = {
+    custom_gcg_hyperparameters_1 = {
         "signal_function": attention_weight_signal_v1,
-        "max_steps": 400,
+        "signal_kwargs": {
+            "layer_weight_strategy": "only_first",
+            "attention_mask_strategy": "payload_only"
+        },
+        "true_loss_function": attention_weight_loss_v1,
+        "true_loss_kwargs": {
+            "layer_weight_strategy": "only_first",
+            "attention_mask_strategy": "payload_only"
+        },
+        "max_steps": 150,
         "topk": 256,
         "forward_eval_candidates": 512,
-        "signal_kwargs": {
-            "layer_weight_strategy": "decreasing"
-        }
     }
 
+    adversarial_parameters_dict_1 = {
+        "init_config": initial_config,
+        "attack_algorithm": "custom_gcg",
+        "attack_hyperparameters": custom_gcg_hyperparameters_1,
+        "early_stop": False,
+        "eval_every_step": True
+    }
+
+    logger.log(adversarial_parameters_dict_1, example_num=example_num)
+    loss_sequences, best_output_sequences = adversarial_opt(model, tokenizer, input_conversation, target_string, adversarial_parameters_dict_1, logger)
+    logger.log(loss_sequences, example_num=example_num)
+    logger.log(best_output_sequences, example_num=example_num)
+
+    custom_gcg_hyperparameters_2 = {
+        "signal_function": attention_weight_signal_v1,
+        "signal_kwargs": {
+            "layer_weight_strategy": "uniform",
+            "attention_mask_strategy": "payload_only"
+        },
+        "true_loss_function": attention_weight_loss_v1,
+        "true_loss_kwargs": {
+            "layer_weight_strategy": "uniform",
+            "attention_mask_strategy": "payload_only"
+        },
+        "max_steps": 150,
+        "topk": 256,
+        "forward_eval_candidates": 512,
+    }
     adversarial_parameters_dict_2 = {
-        "init_config": initial_config_1,
+        "init_config": initial_config,
         "attack_algorithm": "custom_gcg",
         "attack_hyperparameters": custom_gcg_hyperparameters_2,
         "early_stop": False,
@@ -210,17 +361,14 @@ def attack_purplellama_indirect(example_num,
     logger.log(best_output_sequences, example_num=example_num)
 
     custom_gcg_hyperparameters_3 = {
-        "signal_function": attention_weight_signal_v1,
-        "max_steps": 400,
+        "signal_function": gcg.og_gcg_signal,
+        "max_steps": 150,
         "topk": 256,
         "forward_eval_candidates": 512,
-        "signal_kwargs": {
-            "layer_weight_strategy": "increasing"
-        }
     }
 
     adversarial_parameters_dict_3 = {
-        "init_config": initial_config_1,
+        "init_config": initial_config,
         "attack_algorithm": "custom_gcg",
         "attack_hyperparameters": custom_gcg_hyperparameters_3,
         "early_stop": False,
@@ -232,38 +380,18 @@ def attack_purplellama_indirect(example_num,
     logger.log(loss_sequences, example_num=example_num)
     logger.log(best_output_sequences, example_num=example_num)
 
-    custom_gcg_hyperparameters_4 = {
-        "signal_function": gcg.og_gcg_signal,
-        "max_steps": 400,
-        "topk": 256,
-        "forward_eval_candidates": 512,
-    }
-
-    adversarial_parameters_dict_4 = {
-        "init_config": initial_config_1,
-        "attack_algorithm": "custom_gcg",
-        "attack_hyperparameters": custom_gcg_hyperparameters_4,
-        "early_stop": False,
-        "eval_every_step": True
-    }
-
-    logger.log(adversarial_parameters_dict_4, example_num=example_num)
-    loss_sequences, best_output_sequences = adversarial_opt(model, tokenizer, input_conversation, target_string, adversarial_parameters_dict_4, logger)
-    logger.log(loss_sequences, example_num=example_num)
-    logger.log(best_output_sequences, example_num=example_num)
-
-
-
 
 if __name__ == "__main__":
     MODEL_PATH = "/data/models/hf/Meta-Llama-3-8B-Instruct"
     model = transformers.AutoModelForCausalLM.from_pretrained(MODEL_PATH, device_map="auto", torch_dtype=torch.float16, attn_implementation="eager")
     tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_PATH)
     model.generation_config.pad_token_id = tokenizer.pad_token_id
-
+    with open(f"data/ppllama_verbatim.json", "r") as purplellama_indirect_file:
+        purplellama_data = json.load(purplellama_indirect_file)
+    
     for i in range(5):
-        for rand_restart in range(5):
+        for rand_restart in range(3):
             expt_id = f"run_{str(datetime.datetime.now()).replace("-","").replace(" ","").replace(":","").replace(".","")}"
-            logger = experiment_logger.ExperimentLogger(f"logs/runs4/{expt_id}")
+            logger = experiment_logger.ExperimentLogger(f"logs/debug_logs/{expt_id}")
             logger.log(model.__repr__(), example_num=i, rand_restart=rand_restart)
-            attack_purplellama_indirect(i, model, tokenizer, logger)
+            attack_purplellama_indirect(purplellama_data, i, model, tokenizer, logger)
