@@ -139,7 +139,6 @@ def rand_gcg_signal(
     logger: experiment_logger.ExperimentLogger,
 ):
     optim_mask: torch.tensor = masks_data["optim_mask"]
-    target_mask: torch.tensor = masks_data["target_mask"]
 
     best_tokens_indices = torch.stack([torch.randperm(len(tokenizer))[:gcg_topk] for _ in range(optim_mask.shape[0])])
     return best_tokens_indices

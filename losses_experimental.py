@@ -7,6 +7,8 @@ from contextlib import contextmanager
 import time
 import datetime
 import gc
+import shutil
+import pandas as pd
 
 import attack_utility
 import experiment_logger
@@ -40,7 +42,7 @@ def process_batch_attentions(
     input_points.requires_grad_(False)
     batch_input_points = input_points[start_idx:end_idx]
     
-    with torch.no_grad():
+    with torch.inference_mode():
         gc.collect()
         torch.cuda.synchronize()   
         torch.cuda.empty_cache()
@@ -93,14 +95,14 @@ def process_batch_attentions(
         
         # Process attention outputs based on strategy
         if layer_weight_strategy == "uniform":
-            batch_final = torch.stack((
+            batch_final = torch.stack(list((
                 layer_attention[
                     :,
                     :,
                     target_mask - 1
                 ][..., attention_mask].sum(dim=[1,2,3])
                 for layer_attention in batch_attentions
-            )).sum(dim=0)
+            ))).sum(dim=0)
         elif layer_weight_strategy == "only_last":
             batch_final = batch_attentions[-1][
                 :,
@@ -118,14 +120,14 @@ def process_batch_attentions(
             weights = range(1, num_weights + 1)
             if layer_weight_strategy == "decreasing":
                 weights = reversed(weights)
-            batch_final = torch.stack((
+            batch_final = torch.stack(list((
                 weight * layer_attention[
                     :,
                     :,
                     target_mask - 1
                 ][..., attention_mask].sum(dim=[1,2,3])
                 for weight, layer_attention in zip(weights, batch_attentions)
-            )).sum(dim=0)
+            ))).sum(dim=0)
                     
         # Clean up
 
@@ -381,17 +383,94 @@ def attack_purplellama_indirect(
     logger.log(best_output_sequences, example_num=example_num)
 
 
+# def attack_agentharm(
+#     attack_idx,
+#     agentharm_path = "/data/AgentHarm/benchmark/harmful_behaviors_test_public.json"
+# ):
+#     with open(agentharm_path) as agentharm_dataset_file:
+#         agentharm_dataset = json.load(agentharm_dataset_file)["behaviors"]
+    
+#     for target_behvaior in agentharm_dataset:
+
+@experiment_logger.log_parameters(exclude=["model", "tokenizer"])
+def attack_advbench(
+    advbench_data_path: str,
+    example_num: int,
+    model: transformers.AutoModelForCausalLM,
+    tokenizer: transformers.AutoTokenizer,
+    logger: experiment_logger.ExperimentLogger
+):
+    adv_bench_data = pd.read_csv(advbench_data_path)
+    adv_bench_example = adv_bench_data.iloc[example_num].to_dict()
+    malicious_inst = "<ADV_PREFIX>" + adv_bench_example["goal"] + "<ADV_SUFFIX>"
+    target_string = adv_bench_example["target"]
+    input_conversation = [
+        {
+            "role": "user",
+            "content": malicious_inst
+        }
+    ]
+
+    initial_config = {
+        "strategy_type": "random",
+        "prefix_length": 0,
+        "suffix_length": 25,
+        "seed": int(time.time())
+    }
+    raw_gcg_hyperparameters = {
+        "signal_function": gcg.og_gcg_signal,
+        "max_steps": 400,
+        "topk": 256,
+        "forward_eval_candidates": 512,
+    }
+    gcg_adversarial_parameters_dict = {
+        "init_config": initial_config,
+        "attack_algorithm": "custom_gcg",
+        "attack_hyperparameters": raw_gcg_hyperparameters,
+        "early_stop": False,
+        "eval_every_step": True
+    }
+
+    logger.log(gcg_adversarial_parameters_dict, example_num=example_num)
+    loss_sequences, best_output_sequences = adversarial_opt(model, tokenizer, input_conversation, target_string, gcg_adversarial_parameters_dict, logger)
+    logger.log(loss_sequences, example_num=example_num)
+    logger.log(best_output_sequences, example_num=example_num)
+
+
+    rand_gcg_hyperparams = {
+        "signal_function": gcg.rand_gcg_signal,
+        "max_steps": 400,
+        "topk": 256,
+        "forward_eval_candidates": 512
+    }
+    rand_adversarial_parameters_dict = {
+        "init_config": initial_config,
+        "attack_algorithm": "custom_gcg",
+        "attack_hyperparameters": rand_gcg_hyperparams,
+        "early_stop": False,
+        "eval_every_step": True
+    }
+    logger.log(rand_adversarial_parameters_dict, example_num=example_num)
+    loss_sequences, best_output_sequences = adversarial_opt(model, tokenizer, input_conversation, target_string, rand_adversarial_parameters_dict, logger)
+    logger.log(loss_sequences, example_num=example_num)
+    logger.log(best_output_sequences, example_num=example_num)
+
+
+
 if __name__ == "__main__":
+
     MODEL_PATH = "/data/models/hf/Meta-Llama-3-8B-Instruct"
     model = transformers.AutoModelForCausalLM.from_pretrained(MODEL_PATH, device_map="auto", torch_dtype=torch.float16, attn_implementation="eager")
     tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_PATH)
     model.generation_config.pad_token_id = tokenizer.pad_token_id
-    with open(f"data/ppllama_verbatim.json", "r") as purplellama_indirect_file:
-        purplellama_data = json.load(purplellama_indirect_file)
     
-    for i in range(5):
-        for rand_restart in range(3):
+    ADVBENCH_PATH = "data/advbench_harmful_behaviors.csv"
+    EXPT_FOLDER = "logs/runs12"
+    shutil.copy(__file__, EXPT_FOLDER)
+
+    for i in range(10, 20):
+        for rand_restart in range(5):
             expt_id = f"run_{str(datetime.datetime.now()).replace("-","").replace(" ","").replace(":","").replace(".","")}"
-            logger = experiment_logger.ExperimentLogger(f"logs/debug_logs/{expt_id}")
+            logger = experiment_logger.ExperimentLogger(f"{EXPT_FOLDER}/{expt_id}")
             logger.log(model.__repr__(), example_num=i, rand_restart=rand_restart)
-            attack_purplellama_indirect(purplellama_data, i, model, tokenizer, logger)
+            attack_advbench(ADVBENCH_PATH, i, model, tokenizer, logger=logger)

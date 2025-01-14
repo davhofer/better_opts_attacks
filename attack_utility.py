@@ -232,7 +232,7 @@ def find_clean_token_span(tokenizer: transformers.PreTrainedTokenizer,
     span_tokens = full_tokens[token_start:token_end]
     decoded = tokenizer.decode(span_tokens)
     
-    assert decoded in target_text, "Decoded string not a subset of target_text"
+    assert decoded in target_text, f"Decoded string: {decoded} not a subset of target_text: {target_text}"
     return {
         "start": token_start,
         "end": token_end,
