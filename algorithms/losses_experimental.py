@@ -10,10 +10,11 @@ import gc
 import shutil
 import pandas as pd
 
-import attack_utility
-import experiment_logger
+import utils.attack_utility as attack_utility
+import utils.experiment_logger as experiment_logger
 
-import gcg
+import algorithms.gcg as gcg
+import algorithms.autodan as autodan
 
 def process_batch_attentions(
     model: transformers.AutoModelForCausalLM,
@@ -249,14 +250,33 @@ def adversarial_opt(
         loss_sequences, best_output_sequences = gcg.gcg(model, tokenizer, input_tokenized_data, adversarial_parameters_dict["attack_hyperparameters"], logger)
         logger.log(loss_sequences)
         logger.log(best_output_sequences)
-        return loss_sequences, best_output_sequences
+        return loss_sequences, best_output_sequences, None
     elif attack_algorithm == "custom_gcg":
         early_stop = adversarial_parameters_dict.get("early_stop", True)
         eval_every_step = adversarial_parameters_dict.get("eval_every_step", True),
         identical_outputs_before_stop = adversarial_parameters_dict.get("identical_outputs_before_stop", 5)
-        generation_config = adversarial_parameters_dict.get("generation_config", gcg.DEFAULT_GENERATION_CONFIG)
+        generation_config = adversarial_parameters_dict.get("generation_config", attack_utility.DEFAULT_TEXT_GENERATION_CONFIG)
 
         logprobs_sequences, best_output_sequences = gcg.custom_gcg(model,
+            tokenizer,
+            input_tokenized_data,
+            adversarial_parameters_dict["attack_hyperparameters"],
+            logger,
+            early_stop=early_stop,
+            eval_every_step=eval_every_step,
+            identical_outputs_before_stop=identical_outputs_before_stop,
+            generation_config=generation_config
+        )
+        logger.log(logprobs_sequences)
+        logger.log(best_output_sequences)
+        return logprobs_sequences, best_output_sequences
+    elif attack_algorithm == "autodan":
+        early_stop = adversarial_parameters_dict.get("early_stop", True)
+        eval_every_step = adversarial_parameters_dict.get("eval_every_step", True)
+        identical_outputs_before_stop = adversarial_parameters_dict.get("identical_outputs_before_stop", 5)
+        generation_config = adversarial_parameters_dict.get("generation_config", attack_utility.DEFAULT_TEXT_GENERATION_CONFIG)
+
+        logprobs_sequences, best_output_sequences = autodan.autodan(model,
             tokenizer,
             input_tokenized_data,
             adversarial_parameters_dict["attack_hyperparameters"],
@@ -414,63 +434,43 @@ def attack_advbench(
     initial_config = {
         "strategy_type": "random",
         "prefix_length": 0,
-        "suffix_length": 25,
+        "suffix_length": 1,
         "seed": int(time.time())
     }
-    raw_gcg_hyperparameters = {
-        "signal_function": gcg.og_gcg_signal,
-        "max_steps": 400,
-        "topk": 256,
+    autodan_hyperparameters = {
+        "signal_function": autodan.og_autodan_signal,
+        "topk": 4096,
+        "autodan_signal_weight": 100,
+        "autodan_true_weight": 100,
+        "sampling_temperature": 1,
+        "max_steps": 200,
         "forward_eval_candidates": 512,
     }
-    gcg_adversarial_parameters_dict = {
+    autodan_adversarial_parameters_dict = {
         "init_config": initial_config,
-        "attack_algorithm": "custom_gcg",
-        "attack_hyperparameters": raw_gcg_hyperparameters,
+        "attack_algorithm": "autodan",
+        "attack_hyperparameters": autodan_hyperparameters,
         "early_stop": False,
         "eval_every_step": True
     }
 
-    logger.log(gcg_adversarial_parameters_dict, example_num=example_num)
-    loss_sequences, best_output_sequences = adversarial_opt(model, tokenizer, input_conversation, target_string, gcg_adversarial_parameters_dict, logger)
+    logger.log(autodan_adversarial_parameters_dict, example_num=example_num)
+    loss_sequences, best_output_sequences = adversarial_opt(model, tokenizer, input_conversation, target_string, autodan_adversarial_parameters_dict, logger)
     logger.log(loss_sequences, example_num=example_num)
     logger.log(best_output_sequences, example_num=example_num)
-
-
-    rand_gcg_hyperparams = {
-        "signal_function": gcg.rand_gcg_signal,
-        "max_steps": 400,
-        "topk": 256,
-        "forward_eval_candidates": 512
-    }
-    rand_adversarial_parameters_dict = {
-        "init_config": initial_config,
-        "attack_algorithm": "custom_gcg",
-        "attack_hyperparameters": rand_gcg_hyperparams,
-        "early_stop": False,
-        "eval_every_step": True
-    }
-    logger.log(rand_adversarial_parameters_dict, example_num=example_num)
-    loss_sequences, best_output_sequences = adversarial_opt(model, tokenizer, input_conversation, target_string, rand_adversarial_parameters_dict, logger)
-    logger.log(loss_sequences, example_num=example_num)
-    logger.log(best_output_sequences, example_num=example_num)
-
 
 
 if __name__ == "__main__":
-
     MODEL_PATH = "/data/models/hf/Meta-Llama-3-8B-Instruct"
     model = transformers.AutoModelForCausalLM.from_pretrained(MODEL_PATH, device_map="auto", torch_dtype=torch.float16, attn_implementation="eager")
     tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_PATH)
     model.generation_config.pad_token_id = tokenizer.pad_token_id
+    with open(f"data/ppllama_verbatim.json", "r") as purplellama_indirect_file:
+        purplellama_data = json.load(purplellama_indirect_file)
     
-    ADVBENCH_PATH = "data/advbench_harmful_behaviors.csv"
-    EXPT_FOLDER = "logs/runs12"
-    shutil.copy(__file__, EXPT_FOLDER)
-
-    for i in range(10, 20):
-        for rand_restart in range(5):
+    for i in range(5):
+        for rand_restart in range(3):
             expt_id = f"run_{str(datetime.datetime.now()).replace("-","").replace(" ","").replace(":","").replace(".","")}"
-            logger = experiment_logger.ExperimentLogger(f"{EXPT_FOLDER}/{expt_id}")
+            logger = experiment_logger.ExperimentLogger(f"logs/runs9/{expt_id}")
             logger.log(model.__repr__(), example_num=i, rand_restart=rand_restart)
-            attack_advbench(ADVBENCH_PATH, i, model, tokenizer, logger=logger)
+            attack_purplellama_indirect(purplellama_data, i, model, tokenizer, logger)

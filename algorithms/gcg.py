@@ -2,17 +2,13 @@ import torch
 import transformers
 import typing
 import numpy as np
-import attack_utility
+import utils.attack_utility as attack_utility
 import random
-import experiment_logger
+import utils.experiment_logger as experiment_logger
 import gc
 
 
 GCG_LOSS_FUNCTION = attack_utility.UNREDUCED_CE_LOSS
-DEFAULT_GENERATION_CONFIG = {
-    "do_sample": False,
-    "max_new_tokens": 200
-}
 @experiment_logger.log_parameters(exclude=["model", "tokenizer"])
 def gcg(
     model: transformers.AutoModelForCausalLM,
@@ -23,7 +19,7 @@ def gcg(
     *,
     loss_function = GCG_LOSS_FUNCTION,
     eval_every_step = True,
-    generation_config = DEFAULT_GENERATION_CONFIG
+    generation_config = attack_utility.DEFAULT_TEXT_GENERATION_CONFIG
 ):
 
     input_tokens: torch.tensor = input_tokenized_data["tokens"]
@@ -41,7 +37,7 @@ def gcg(
         one_hot_tensor.requires_grad_()
         embedding_tensor = model.get_input_embeddings().weight[:len(tokenizer.vocab)]
         inputs_embeds = torch.unsqueeze(one_hot_tensor.to(embedding_tensor.device) @ embedding_tensor, 0)
-        logits = model.forward(inputs_embeds=inputs_embeds).logits
+        logits = model(inputs_embeds=inputs_embeds).logits
         loss_tensor = loss_function(logits[0, target_mask - 1, :], input_tokens[target_mask].to(logits.device)).sum()
         loss_tensor.backward()
         loss_val = loss_tensor.item()
@@ -93,6 +89,10 @@ def og_gcg_signal(
     masks_data: typing.Dict[str, torch.tensor],
     gcg_topk: int,
     logger: experiment_logger.ExperimentLogger,
+    *,
+    step_num,
+    log_gradients = True,
+    **kwargs
 ):
     optim_mask: torch.tensor = masks_data["optim_mask"]
     target_mask: torch.tensor = masks_data["target_mask"]
@@ -101,10 +101,12 @@ def og_gcg_signal(
     one_hot_tensor.requires_grad_()
     embedding_tensor = model.get_input_embeddings().weight[:len(tokenizer.vocab)]
     inputs_embeds = torch.unsqueeze(one_hot_tensor.to(embedding_tensor.device) @ embedding_tensor, 0)
-    logits = model.forward(inputs_embeds=inputs_embeds).logits
+    logits = model(inputs_embeds=inputs_embeds).logits
     loss_tensor = GCG_LOSS_FUNCTION(logits[0, target_mask - 1, :], input_points[target_mask].to(logits.device)).sum()
     loss_tensor.backward()
     grad_optims = - (one_hot_tensor.grad[optim_mask, :])
+    if log_gradients:
+        logger.log(grad_optims, step_num=step_num)
     best_tokens_indices = grad_optims.topk(gcg_topk, dim=-1).indices
     return best_tokens_indices
 
@@ -123,7 +125,7 @@ def neg_gcg_signal(
     one_hot_tensor.requires_grad_()
     embedding_tensor = model.get_input_embeddings().weight[:len(tokenizer.vocab)]
     inputs_embeds = torch.unsqueeze(one_hot_tensor.to(embedding_tensor.device) @ embedding_tensor, 0)
-    logits = model.forward(inputs_embeds=inputs_embeds).logits
+    logits = model(inputs_embeds=inputs_embeds).logits
     loss_tensor = GCG_LOSS_FUNCTION(logits[0, target_mask - 1, :], input_points[target_mask].to(logits.device)).sum()
     loss_tensor.backward()
     grad_optims = (one_hot_tensor.grad[optim_mask, :])
@@ -155,6 +157,7 @@ def custom_gcg(
     *,
     eval_every_step,
     early_stop,
+    eval_initial,
     identical_outputs_before_stop,
     generation_config
 ):
@@ -176,21 +179,22 @@ def custom_gcg(
     logprobs_sequences = []
     successive_correct_outputs = 0
 
-    initial_true_loss = true_loss_function(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger, **(true_loss_kwargs or {}))
-    logger.log(initial_true_loss, step_num=-1)
-    best_output_sequences.append(current_best_tokens.clone())
-    logger.log(current_best_tokens, step_num=-1)
-    initial_logprobs = attack_utility.target_logprobs(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger)
-    initial_logprobs = initial_logprobs.item()
-    logger.log(initial_logprobs, step_num=-1)
-    logprobs_sequences.append(initial_logprobs)
-    generated_output_tokens = model.generate(torch.unsqueeze(current_best_tokens[eval_input_mask], dim=0), attention_mask=torch.unsqueeze(torch.ones(current_best_tokens[eval_input_mask].shape), dim=0), **generation_config)
-    generated_output_string = tokenizer.batch_decode(generated_output_tokens[:, eval_input_mask[-1] + 1 :])[0]
-    logger.log(generated_output_string, step_num=-1)
+    if eval_initial:
+        initial_true_loss = true_loss_function(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger, **(true_loss_kwargs or {}))
+        logger.log(initial_true_loss, step_num=-1)
+        best_output_sequences.append(current_best_tokens.clone())
+        logger.log(current_best_tokens, step_num=-1)
+        initial_logprobs = attack_utility.target_logprobs(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger)
+        initial_logprobs = initial_logprobs.item()
+        logger.log(initial_logprobs, step_num=-1)
+        logprobs_sequences.append(initial_logprobs)
+        generated_output_tokens = model.generate(torch.unsqueeze(current_best_tokens[eval_input_mask], dim=0), attention_mask=torch.unsqueeze(torch.ones(current_best_tokens[eval_input_mask].shape), dim=0), **generation_config)
+        generated_output_string = tokenizer.batch_decode(generated_output_tokens[:, eval_input_mask[-1] + 1 :])[0]
+        logger.log(generated_output_string, step_num=-1)
 
     for step_num in range(custom_gcg_hyperparams["max_steps"]):
-
-        best_tokens_indices = signal_function(model, tokenizer, current_best_tokens, masks_data, custom_gcg_hyperparams["topk"], logger, **(signal_kwargs or {}))
+        
+        best_tokens_indices = signal_function(model, tokenizer, current_best_tokens, masks_data, custom_gcg_hyperparams["topk"], logger, step_num=step_num, **(signal_kwargs or {}))
         
         indices_to_sample = set()
         indices_to_exclude = set()
@@ -213,7 +217,9 @@ def custom_gcg(
         del best_tokens_indices
         gc.collect()
         torch.cuda.empty_cache()
+        logger.log(substitution_data, step_num=step_num)
         true_losses = true_loss_function(model, tokenizer, substitution_data, masks_data, input_tokens[target_mask], logger, **(true_loss_kwargs or {}))
+        logger.log(true_losses, step_num=step_num)
         current_best_true_loss = true_losses[torch.argmin(true_losses)]
         logger.log(current_best_true_loss, step_num=step_num)
         current_best_tokens = substitution_data[torch.argmin(true_losses)].clone()

@@ -6,8 +6,9 @@ import uuid
 import functools
 from pathlib import Path
 import contextlib
-from typing import Any, Dict, Optional, Iterator, Callable, TypeVar, Union, cast
+from typing import Any, Dict, Optional, Iterator, Callable, TypeVar, Union, cast, List
 import traceback
+import pandas as pd
 
 T = TypeVar('T', bound=Callable[..., Any])
 
@@ -219,3 +220,150 @@ class ExperimentLogger:
                             
         except Exception as e:
             raise RuntimeError(f"Error querying objects: {str(e)}") from e
+
+
+    def query_with_metadata(self, metadata_query: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
+        """
+        Query logged objects based on metadata and return both objects and their metadata.
+        Special handling for trace_id to match anywhere in the trace stack.
+        
+        Args:
+            metadata_query: Dictionary of metadata key-value pairs to match
+            
+        Returns:
+            Iterator of dictionaries containing:
+                - 'object': The stored object
+                - 'metadata': The full metadata record for this object
+        """
+        def matches_query(metadata: Dict[str, Any], query: Dict[str, Any]) -> bool:
+            for k, v in query.items():
+                if k == 'trace_id':
+                    direct_match = metadata.get('trace_id') == v
+                    stack_match = v in metadata.get('trace_stack', []) 
+                    if not (direct_match or stack_match):
+                        return False
+                else:
+                    # Regular metadata matching
+                    if metadata.get(k) != v:
+                        return False
+            return True
+
+        try:
+            with shelve.open(self.objects_path) as shelf:
+                with open(self.metadata_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        try:
+                            metadata = json.loads(line.strip())
+                            if matches_query(metadata, metadata_query):
+                                obj_id = metadata['id']
+                                
+                                if shelf.get(obj_id, None) is not None:
+                                    yield {
+                                        'object': shelf[obj_id],
+                                        'metadata': metadata
+                                    }
+                        except json.JSONDecodeError:
+                            continue
+                                
+        except Exception as e:
+            raise RuntimeError(f"Error querying objects: {str(e)}") from e
+
+
+
+def load_experiment_logs(
+    metadata_path: Union[str, Path],
+    include_trace_stack: bool = True,  # Changed default to True since we're adding better handling
+    additional_explode_columns: Optional[List[str]] = None
+) -> pd.DataFrame:
+    """
+    Load experimental logs from a JSONL file into a pandas DataFrame with proper handling
+    of trace IDs and nested structures.
+    
+    Args:
+        metadata_path: Path to the JSONL metadata file
+        include_trace_stack: Whether to keep and unroll the trace stack into separate columns
+        additional_explode_columns: List of additional columns that contain JSON objects
+            that should be exploded into separate columns
+    
+    Returns:
+        pd.DataFrame: DataFrame containing the parsed logs with columns for:
+            - Basic metadata (id, timestamp, function_name, etc.)
+            - Trace information (trace_id, trace_stack.1, trace_stack.2, etc.)
+            - Any additional metadata fields from the logs
+    """
+    # Read all lines from the JSONL file
+    records = []
+    with open(metadata_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            try:
+                record = json.loads(line.strip())
+                records.append(record)
+            except json.JSONDecodeError:
+                continue
+    
+    # Convert to DataFrame
+    df = pd.DataFrame(records)
+    
+    # Convert id to datetime if it contains timestamp information
+    if 'id' in df.columns:
+        try:
+            df['timestamp'] = pd.to_numeric(df['id']).apply(pd.Timestamp.fromtimestamp)
+        except (ValueError, TypeError):
+            pass
+    
+    # Handle trace information
+    if 'trace_stack' in df.columns and include_trace_stack:
+        # First, find the maximum depth of any trace stack
+        max_depth = 0
+        for stack in df['trace_stack'].dropna():
+            if isinstance(stack, list):
+                max_depth = max(max_depth, len(stack))
+        
+        # Create new columns for each level of the stack
+        for depth in range(max_depth):
+            col_name = f'trace_stack.{depth}'
+            df[col_name] = None  # Initialize with None
+            
+            # Fill in values row by row
+            for idx, stack in df['trace_stack'].items():
+                try:
+                    if pd.isna(stack) or not isinstance(stack, list):
+                        continue
+                except Exception:
+                    continue
+                if depth < len(stack):
+                    df.at[idx, col_name] = stack[depth]
+        
+        # Drop the original trace_stack column
+        df = df.drop('trace_stack', axis=1)
+        
+        # Add depth of call stack
+        df['call_depth'] = df.filter(like='trace_stack').notna().sum(axis=1)
+    
+    # Explode additional JSON columns if specified
+    if additional_explode_columns:
+        for col in additional_explode_columns:
+            if col in df.columns:
+                # Try to parse the column as JSON if it's not already a dict
+                if not isinstance(df[col].iloc[0], dict):
+                    df[col] = df[col].apply(lambda x: json.loads(x) if isinstance(x, str) else x)
+                
+                # Create new columns for each key in the JSON objects
+                json_df = pd.json_normalize(df[col].dropna())
+                
+                # Add prefix to avoid column name conflicts
+                json_df = json_df.add_prefix(f"{col}_")
+                
+                # Join with original DataFrame
+                df = df.drop(col, axis=1).join(json_df)
+    
+    return df
+
+def params_and_trace_ids_by_function(log_folder, metadata_df, function_to_get):
+    shelf = shelve.open(f"{log_folder}/objects")
+    metadata_params_df = metadata_df[(metadata_df["variable_name"] == "params") & (metadata_df["function_name"] == function_to_get)]
+    params_list = [shelf.get(obj_id) for obj_id in metadata_params_df["id"].tolist()]
+    trace_ids_list = metadata_params_df["trace_id"].tolist()
+    assert len(params_list) == len(set(trace_ids_list))
+    shelf.close()
+    return params_list, trace_ids_list
