@@ -42,6 +42,7 @@ def adversarial_opt(
         eval_every_step = adversarial_parameters_dict.get("eval_every_step", True),
         identical_outputs_before_stop = adversarial_parameters_dict.get("identical_outputs_before_stop", 5)
         generation_config = adversarial_parameters_dict.get("generation_config", attack_utility.DEFAULT_TEXT_GENERATION_CONFIG)
+        eval_initial = adversarial_parameters_dict.get("eval_initial", True)
 
         logprobs_sequences, best_output_sequences = gcg.custom_gcg(model,
             tokenizer,
@@ -51,7 +52,8 @@ def adversarial_opt(
             early_stop=early_stop,
             eval_every_step=eval_every_step,
             identical_outputs_before_stop=identical_outputs_before_stop,
-            generation_config=generation_config
+            generation_config=generation_config,
+            eval_initial=eval_initial
         )
         logger.log(logprobs_sequences)
         logger.log(best_output_sequences)
@@ -95,105 +97,4 @@ def adversarial_opt(
         )
         logger.log(logprobs_sequences)
         logger.log(embeds_sequences)
-
-
-@experiment_logger.log_parameters(exclude=["model", "tokenizer"])
-def attack_purplellama_indirect(example_num,
-    model: transformers.AutoModelForCausalLM,
-    tokenizer: transformers.AutoTokenizer,
-    logger: experiment_logger.ExperimentLogger,
-    *,
-    add_eot_to_target=True
-):
-    with open(f"data/purplellama_indirect.json", "r") as purplellama_indirect_file:
-        purplellama_data = json.load(purplellama_indirect_file)
-    
-    purplellama_example = purplellama_data[example_num]
-    input_conversation = [
-            {
-                "role": "system",
-                "content":  purplellama_example["test_case_prompt"]
-            },
-            {
-                "role": "user",
-                "content": purplellama_example["user_input_wrapper"]
-            }
-        ]
-
-    target_string = purplellama_example["target"]
-    if add_eot_to_target:
-        if "lama" in model.__repr__():
-            target_string = target_string + "<|eot_id|>"
-    
-    initial_config_1 = {
-        "strategy_type": "random",
-        "prefix_length": 25,
-        "suffix_length": 25,
-        "seed": int(time.time())
-    }
-
-    embed_snap_hyperparameters = {
-        "step_size": 0.001,
-        "max_steps": 250,
-
-    }    
-
-    adversarial_parameters_dict_4 = {
-        "init_config": initial_config_1,
-        "attack_algorithm": "embed_opt",
-        "attack_hyperparameters": embed_snap_hyperparameters
-    }
-
-
-    logger.log(adversarial_parameters_dict_4, example_num=example_num)
-    loss_sequences, best_output_sequences = adversarial_opt(model, tokenizer, input_conversation, target_string, adversarial_parameters_dict_4, logger)
-    logger.log(loss_sequences, example_num=example_num)
-    logger.log(best_output_sequences, example_num=example_num)
-
-@experiment_logger.log_parameters(exclude=["model", "tokenizer"])
-def attack_advbench(
-    advbench_data_path: str,
-    example_num: int,
-    model: transformers.AutoModelForCausalLM,
-    tokenizer: transformers.AutoTokenizer,
-    logger: experiment_logger.ExperimentLogger
-):
-    adv_bench_data = pd.read_csv(advbench_data_path)
-    adv_bench_example = adv_bench_data.iloc[example_num].to_dict()
-    malicious_inst = "<ADV_PREFIX>" + adv_bench_example["goal"] + "<ADV_SUFFIX>"
-    target_string = adv_bench_example["target"]
-    input_conversation = [
-        {
-            "role": "user",
-            "content": malicious_inst
-        }
-    ]
-
-    TOPK_VALUES = [16, 64, 256]
-    ATTACK_DIMENSION_VALUES = [40, 80, 120]
-
-    for ex_index, (topk, attack_dimension) in enumerate(itertools.product(TOPK_VALUES, ATTACK_DIMENSION_VALUES)):
-        initial_config = {
-            "strategy_type": "random",
-            "prefix_length": 0,
-            "suffix_length": attack_dimension,
-            "seed": int(time.time())
-        }
-        custom_gcg_hyperparameters_3 = {
-            "signal_function": gcg.og_gcg_signal,
-            "max_steps": 150,
-            "topk": topk,
-            "forward_eval_candidates": 512,
-        }
-        adversarial_parameters_dict_3 = {
-            "init_config": initial_config,
-            "attack_algorithm": "custom_gcg",
-            "attack_hyperparameters": custom_gcg_hyperparameters_3,
-            "early_stop": False,
-            "eval_every_step": True
-        }
-
-        logger.log(adversarial_parameters_dict_3, example_num=example_num, ex_index=ex_index)
-        loss_sequences, best_output_sequences = adversarial_opt(model, tokenizer, input_conversation, target_string, adversarial_parameters_dict_3, logger)
-        logger.log(loss_sequences, example_num=example_num)
-        logger.log(best_output_sequences, example_num=example_num)
+        return logprobs_sequences, embeds_sequences

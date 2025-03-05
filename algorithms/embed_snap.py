@@ -37,6 +37,7 @@ def embed_opt(
 
     logprobs_sequences = []
     embeds_sequences = []
+    generated_output_strings = []
     if eval_initial:
         initial_true_loss = true_loss_function(model, tokenizer, torch.unsqueeze(input_tokens, 0), masks_data, input_tokens[target_mask], logger, **(true_loss_kwargs or {}))
         logger.log(initial_true_loss, step_num=-1)
@@ -45,12 +46,12 @@ def embed_opt(
         initial_logprobs = initial_logprobs.item()
         logger.log(initial_logprobs, step_num=-1)
         logprobs_sequences.append(initial_logprobs)
-        generated_output_tokens = model.generate(torch.unsqueeze(input_tokens[eval_input_mask].to(model.device), dim=0), attention_mask=torch.unsqueeze(torch.ones(input_tokens[eval_input_mask].to(model.device).shape), dim=0), **generation_config)
+        generated_output_tokens = model.generate(torch.unsqueeze(input_tokens[eval_input_mask].to(model.device), dim=0), attention_mask=torch.unsqueeze(torch.ones((len(eval_input_mask),)), dim=0).to(model.device), **generation_config)
         generated_output_string = tokenizer.batch_decode(generated_output_tokens[:, eval_input_mask[-1] + 1 :])[0]
         logger.log(generated_output_string, step_num=-1)
 
     embedding_map = model.get_input_embeddings()
-    inputs_embeds = embedding_map(input_tokens).detach().clone()
+    inputs_embeds = embedding_map(input_tokens.to(embedding_map.weight.device)).detach().clone()
     for step_num in range(embed_snap_hyperparams["max_steps"]):
         embeds_sequences.append(inputs_embeds)
         inputs_embeds.requires_grad_()
@@ -59,7 +60,7 @@ def embed_opt(
         loss_tensor.backward()
         inputs_grads = inputs_embeds.grad
         inputs_embeds.requires_grad_(False)
-        inputs_embeds[optim_mask] = inputs_embeds[optim_mask] - embed_snap_hyperparams["step_size"] * inputs_grads[optim_mask]
+        inputs_embeds[optim_mask] = inputs_embeds[optim_mask] - embed_snap_hyperparams["step_size"] * (inputs_grads[optim_mask] / torch.unsqueeze(torch.norm(inputs_grads[optim_mask], dim=-1), dim=-1))
         inputs_embeds.grad.zero_()
         model.zero_grad()
         if eval_every_step:
@@ -67,8 +68,9 @@ def embed_opt(
             logprobs = logprobs.item()
             logger.log(logprobs, step_num=step_num)
             logprobs_sequences.append(logprobs)
-            generated_output_tokens = model.generate(inputs_embeds=torch.unsqueeze(inputs_embeds[eval_input_mask, :], dim=0), attention_mask=torch.unsqueeze(torch.ones((len(eval_input_mask),)), dim=0), **generation_config)
+            generated_output_tokens = model.generate(inputs_embeds=torch.unsqueeze(inputs_embeds[eval_input_mask, :], dim=0), attention_mask=torch.unsqueeze(torch.ones((len(eval_input_mask),)), dim=0).to(model.device), **generation_config)
             generated_output_string = tokenizer.batch_decode(generated_output_tokens)[0]
+            generated_output_strings.append(generated_output_string)
             logger.log(generated_output_string, step_num=step_num)
             if early_stop:
                 if generated_output_string == tokenizer.decode(input_tokenized_data["tokens"][target_mask]):

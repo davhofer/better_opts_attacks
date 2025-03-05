@@ -458,19 +458,3 @@ def attack_advbench(
     loss_sequences, best_output_sequences = adversarial_opt(model, tokenizer, input_conversation, target_string, autodan_adversarial_parameters_dict, logger)
     logger.log(loss_sequences, example_num=example_num)
     logger.log(best_output_sequences, example_num=example_num)
-
-
-if __name__ == "__main__":
-    MODEL_PATH = "/data/models/hf/Meta-Llama-3-8B-Instruct"
-    model = transformers.AutoModelForCausalLM.from_pretrained(MODEL_PATH, device_map="auto", torch_dtype=torch.float16, attn_implementation="eager")
-    tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_PATH)
-    model.generation_config.pad_token_id = tokenizer.pad_token_id
-    with open(f"data/ppllama_verbatim.json", "r") as purplellama_indirect_file:
-        purplellama_data = json.load(purplellama_indirect_file)
-    
-    for i in range(5):
-        for rand_restart in range(3):
-            expt_id = f"run_{str(datetime.datetime.now()).replace("-","").replace(" ","").replace(":","").replace(".","")}"
-            logger = experiment_logger.ExperimentLogger(f"logs/runs9/{expt_id}")
-            logger.log(model.__repr__(), example_num=i, rand_restart=rand_restart)
-            attack_purplellama_indirect(purplellama_data, i, model, tokenizer, logger)

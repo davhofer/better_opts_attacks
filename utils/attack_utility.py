@@ -617,7 +617,7 @@ def bulk_logits_from_embeds_iter(
                 sub_iterator = bulk_logits_from_embeds_iter(
                     model,
                     data_piece,
-                    batch_size // 2,
+                    max(1, batch_size // 2),
                     generation_params
                 )
                 

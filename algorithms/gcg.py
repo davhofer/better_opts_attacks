@@ -56,7 +56,15 @@ def gcg(
             raise ValueError(f"gradient_signal not recognized")
 
         indices_to_sample = set()
-        while len(indices_to_sample) < gcg_hyperparams["forward_eval_candidates"]:
+
+        if isinstance(gcg_hyperparams["forward_eval_candidates"], str):
+            if gcg_hyperparams["forward_eval_candidates"] == "all":
+                num_forward_evals = len(optim_mask) * gcg_hyperparams["topk"] 
+        else:
+            assert isinstance(gcg_hyperparams["forward_eval_candidates"], int), "Only strings or ints"
+            num_forward_evals = gcg_hyperparams["forward_eval_candidates"]
+
+        while len(indices_to_sample) < num_forward_evals:
             first_coordinate = torch.randint(0, best_tokens_indices.shape[0], (1,)).to(torch.int32).item()
             second_coordinate = torch.randint(0, best_tokens_indices.shape[1], (1,)).to(torch.int32).item()
             if (first_coordinate, second_coordinate) in indices_to_sample:
@@ -199,24 +207,40 @@ def custom_gcg(
         indices_to_sample = set()
         indices_to_exclude = set()
         substitutions_set = set()
-        while len(indices_to_sample) < custom_gcg_hyperparams["forward_eval_candidates"]:
-            first_coordinate = torch.randint(0, best_tokens_indices.shape[0], (1,)).to(torch.int32).item()
-            second_coordinate = torch.randint(0, best_tokens_indices.shape[1], (1,)).to(torch.int32).item()
-            if (first_coordinate, second_coordinate) in indices_to_sample:
-                continue
-            if (first_coordinate, second_coordinate) in indices_to_exclude:
-                continue
-            random_substitution_make = current_best_tokens.clone()
-            random_substitution_make[optim_mask[first_coordinate]] = best_tokens_indices[(first_coordinate, second_coordinate)]
-            if (substitution_validity_function is None) or (substitution_validity_function(random_substitution_make)):
-                indices_to_sample.add((first_coordinate, second_coordinate))
-                substitutions_set.add(random_substitution_make)
-            else:
-                indices_to_exclude.add((first_coordinate, second_coordinate))
-        substitution_data = torch.stack(list(substitutions_set))
+
+        if isinstance(custom_gcg_hyperparams["forward_eval_candidates"], str):
+            if custom_gcg_hyperparams["forward_eval_candidates"] == "all":
+                for first_coordinate in range(best_tokens_indices.shape[0]):
+                    for second_coordinate in range(best_tokens_indices.shape[1]):
+                        substitution_make = current_best_tokens.clone()
+                        substitution_make[optim_mask[first_coordinate]] = best_tokens_indices[(first_coordinate, second_coordinate)]
+                        substitutions_set.add(substitution_make)
+                substitution_data = torch.stack(list(substitutions_set))
+        else:
+            assert isinstance(custom_gcg_hyperparams["forward_eval_candidates"], int), "Only strings or ints"
+            num_forward_evals = custom_gcg_hyperparams["forward_eval_candidates"]
+            while len(indices_to_sample) < num_forward_evals:
+                first_coordinate = torch.randint(0, best_tokens_indices.shape[0], (1,)).to(torch.int32).item()
+                second_coordinate = torch.randint(0, best_tokens_indices.shape[1], (1,)).to(torch.int32).item()
+                if (first_coordinate, second_coordinate) in indices_to_sample:
+                    continue
+                if (first_coordinate, second_coordinate) in indices_to_exclude:
+                    continue
+                random_substitution_make = current_best_tokens.clone()
+                random_substitution_make[optim_mask[first_coordinate]] = best_tokens_indices[(first_coordinate, second_coordinate)]
+                if (substitution_validity_function is None) or (substitution_validity_function(random_substitution_make)):
+                    indices_to_sample.add((first_coordinate, second_coordinate))
+                    substitutions_set.add(random_substitution_make)
+                else:
+                    indices_to_exclude.add((first_coordinate, second_coordinate))
+            substitution_data = torch.stack(list(substitutions_set))
+
+
         del best_tokens_indices
         gc.collect()
         torch.cuda.empty_cache()
+        previous_best_tokens = current_best_tokens
+        logger.log(previous_best_tokens, step_num=step_num)
         logger.log(substitution_data, step_num=step_num)
         true_losses = true_loss_function(model, tokenizer, substitution_data, masks_data, input_tokens[target_mask], logger, **(true_loss_kwargs or {}))
         logger.log(true_losses, step_num=step_num)

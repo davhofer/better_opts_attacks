@@ -100,11 +100,12 @@ def gradient_rankings_run(model, tokenizer, log_folder, steps_fraction = 10, num
         with open(f"{log_folder}/gradients_rankings.pkl", "wb") as gradient_ranks_pkl:
             pkl.dump(old_result_list, gradient_ranks_pkl)
 
-MODEL_PATH = "/data/models/hf/Meta-Llama-3-8B-Instruct"
-model = transformers.AutoModelForCausalLM.from_pretrained(MODEL_PATH, torch_dtype=torch.float16).to("cuda:0")
-tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_PATH)
-LOG_FOLDER = "logs/runs19/run_20250128120450222530"
-gradient_rankings_run(model, tokenizer, LOG_FOLDER)
+if __name__=="__main__":
+    MODEL_PATH = "/data/models/hf/Meta-Llama-3-8B-Instruct"
+    model = transformers.AutoModelForCausalLM.from_pretrained(MODEL_PATH, torch_dtype=torch.float16).to("cuda:0")
+    tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_PATH)
+    LOG_FOLDER = "logs/runs19/run_20250128120450222530"
+    gradient_rankings_run(model, tokenizer, LOG_FOLDER)
 
 
 
