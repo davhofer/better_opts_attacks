@@ -1,0 +1,3 @@
+[submodule "other_repos"]
+	path = other_repos
+	url = https://github.com/facebookresearch/SecAlign.git
