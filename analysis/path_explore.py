@@ -68,10 +68,10 @@ def compute_paths(
 
 if __name__ == "__main__":
     MODEL_PATH = "/data/models/hf/Meta-Llama-3-8B-Instruct"
-    model = transformers.AutoModelForCausalLM.from_pretrained(MODEL_PATH, device_map="auto", torch_dtype=torch.float16, attn_implementation="flash_attention_2")
+    model = transformers.AutoModelForCausalLM.from_pretrained(MODEL_PATH, device_map="auto", use_cache=True)
     tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_PATH)
     tokenizer.pad_token_id = tokenizer.eos_token_id
     model.generation_config.pad_token_id = tokenizer.pad_token_id
-    LOG_FOLDER = "logs/runs28/run_20250221184322935036"
+    LOG_FOLDER = "logs/runs30/run_20250303080955836269"
     final_results = compute_paths(model, tokenizer, LOG_FOLDER, 15, 64)
     
