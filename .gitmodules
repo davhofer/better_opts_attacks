@@ -1,3 +1,6 @@
 [submodule "other_repos/SecAlign"]
 	path = other_repos/SecAlign
 	url = https://github.com/facebookresearch/SecAlign.git
+[submodule "other_repos/FastChat"]
+	path = other_repos/FastChat
+	url = https://github.com/lm-sys/FastChat.git
