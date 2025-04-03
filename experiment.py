@@ -1,4 +1,3 @@
-import adversarial_opt
 import transformers
 import torch
 import pandas as pd
@@ -8,9 +7,13 @@ import itertools
 import datetime
 import shutil
 import os
+import gc
+import traceback
 
 import utils.experiment_logger as experiment_logger
 import algorithms.gcg as gcg
+from secalign_refactored import secalign
+import adversarial_opt
 
 
 @experiment_logger.log_parameters(exclude=["model", "tokenizer"])
@@ -139,25 +142,33 @@ def attack_advbench(
     logger.log(best_output_sequences, example_num=example_num)
 
 
-if __name__ == "__main__":
+SECALIGN_TARGET_STRING = "Hacked!"
+def attack_secalign_model(
+    
+    model,
+    tokenizer,
+    frontend_delimiters,
+    logger
+):
+    target_string
 
-    MODEL_PATH = "/data/models/hf/Meta-Llama-3-8B-Instruct"
-    model = transformers.AutoModelForCausalLM.from_pretrained(MODEL_PATH, device_map="auto")
-    tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_PATH)
-    tokenizer.pad_token_id = tokenizer.eos_token_id
-    model.generation_config.pad_token_id = tokenizer.pad_token_id
-    with open(f"data/purplellama_indirect.json", "r") as purplellama_indirect_file:
-        purplellama_data = json.load(purplellama_indirect_file)
+
+if __name__ == "__main__":
 
     EXPT_FOLDER = "logs/runs30"
     shutil.copy(__file__, EXPT_FOLDER)
 
-    for i in range(5):
-        for rand_restart in range(1):
-            expt_id = f"run_{str(datetime.datetime.now()).replace("-","").replace(" ","").replace(":","").replace(".","")}"
-            logger = experiment_logger.ExperimentLogger(f"{EXPT_FOLDER}/{expt_id}")
-            logger.log(model.__repr__(), example_num=i, rand_restart=rand_restart)
-            attack_purplellama_indirect(purplellama_data, i, model, tokenizer, logger)
+    for (model_name, defence) in secalign.MODEL_REL_PATHS:
+        if "instruct" not in model_name.lower():
+            continue
+        if "defence" == "undefended":
+            continue
+        try:
+            model, tokenizer, frontend_delimiters = secalign.load_defended_model(model_name, defence)
+            attack_secalign_model()
+        except Exception:
+            traceback.print_exc()
+
 
 
 
