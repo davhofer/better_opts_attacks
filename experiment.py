@@ -9,11 +9,15 @@ import shutil
 import os
 import gc
 import traceback
+import random
+import copy
 
+import utils.attack_utility as attack_utility
 import utils.experiment_logger as experiment_logger
 import algorithms.gcg as gcg
 from secalign_refactored import secalign
 import adversarial_opt
+import algorithms.losses_experimental as losses_experimental
 
 
 @experiment_logger.log_parameters(exclude=["model", "tokenizer"])
@@ -94,7 +98,6 @@ def attack_purplellama_indirect(
     logger.log(loss_sequences, example_num=example_num)
     logger.log(best_outputs_sequences, example_num=example_num)
 
-
 @experiment_logger.log_parameters(exclude=["model", "tokenizer"])
 def attack_advbench(
     advbench_data_path: str,
@@ -105,7 +108,7 @@ def attack_advbench(
 ):
     adv_bench_data = pd.read_csv(advbench_data_path)
     adv_bench_example = adv_bench_data.iloc[example_num].to_dict()
-    malicious_inst = "<ADV_PREFIX>" + adv_bench_example["goal"] + "<ADV_SUFFIX>"
+    malicious_inst = attack_utility.ADV_PREFIX_INDICATOR + adv_bench_example["goal"] + attack_utility.ADV_SUFFIX_INDICATOR
     target_string = adv_bench_example["target"]
     input_conversation = [
         {
@@ -142,53 +145,231 @@ def attack_advbench(
     logger.log(best_output_sequences, example_num=example_num)
 
 
-SECALIGN_TARGET_STRING = "Hacked!"
-def attack_secalign_model(
+def secalign_filter(token_ids, **kwargs):
+
+    masks_data = kwargs.get("masks_data", None)
+    tokenizer = kwargs.get("tokenizer", None)
+
+    if tokenizer is None:
+        raise ValueError(f"SecAlign filter function needs a tokenizer to be sent through")
+
+    is_invertible = attack_utility.invertibility_filter(token_ids, tokenizer=tokenizer)
+
+    if masks_data is None:
+        decoded_string = tokenizer.decode(token_ids)
+        return not any([spec_token_id in decoded_string for spec_token_id in tokenizer.get_added_vocab()])
+    prefix_mask = masks_data["prefix_mask"]
+    suffix_mask = masks_data["suffix_mask"]
+    decoded_prefix = tokenizer.decode(token_ids[prefix_mask])
+    decoded_suffix = tokenizer.decode(token_ids[suffix_mask])
+    prefix_contains_specs = any([spec_token_id in decoded_prefix for spec_token_id in tokenizer.get_added_vocab()])
+    suffix_contains_specs = any([spec_token_id in decoded_suffix for spec_token_id in tokenizer.get_added_vocab()])
     
+    
+    return (not (prefix_contains_specs or suffix_contains_specs)) and is_invertible
+
+def secalign_ideal_attention_v1(
+    model,
+    tokenizer,
+    input_points,
+    masks_data,
+    *,
+    attention_mask_strategy
+):
+    if input_points.dim() == 1:
+        input_points = torch.unsqueeze(input_points, dim=0)
+    
+    payload_mask: torch.Tensor = masks_data["payload_mask"]
+    control_mask: torch.Tensor = masks_data["control_mask"]
+    target_mask: torch.Tensor = masks_data["target_mask"]
+
+    if attention_mask_strategy == "payload_only":
+        attention_mask = payload_mask
+        attention_mask_formatted = torch.zeros(input_points.shape)
+        attention_mask_formatted[:, attention_mask] = 1
+        attentions = model(input_ids=input_points, attention_mask=attention_mask_formatted, output_attentions=True).attentions
+    elif attention_mask_strategy == "payload_and_control":
+        attention_mask = torch.cat((payload_mask, control_mask))
+        attention_mask_formatted = torch.zeros(input_points.shape)
+        attention_mask_formatted[:, attention_mask] = 1
+        attentions = model(input_ids=input_points, attention_mask=attention_mask_formatted, output_attentions=True).attentions
+    # Removing these two, because it might be that we can emulate the squeezed
+    # versions with just modifying position_ids???
+    # 
+    # elif attention_mask_strategy == "payload_control_squeezed":
+    #     attention_mask = torch.cat((payload_mask, control_mask))
+    #     attentions = model(input_ids=input_points[:, sorted(attention_mask)], output_attentions=True).attentions
+    # elif attention_mask_strategy == "payload_squeezed":
+    #     attention_mask = payload_mask
+    #     attentions = model(input_ids=input_points[:, sorted(attention_mask)], output_attentions=True).attentions
+    else:
+        raise ValueError(f"attention_mask_strategy {attention_mask_strategy} is not implemented yet.")
+    return torch.stack(attentions)[:, :, :, target_mask - 1, :]
+
+    
+
+@experiment_logger.log_parameters(exclude=["model", "tokenizer"])
+def attack_secalign_model(
+    example_target,
     model,
     tokenizer,
     frontend_delimiters,
-    logger
+    logger: experiment_logger.ExperimentLogger,
+    *,
+    convert_to_secalign_format = True
 ):
-    target_string
+    
+    input_conv = example_target["input_conv"]
+    target = example_target["target"]
 
+    if convert_to_secalign_format:
+        assert isinstance(input_conv, list) and all([isinstance(conv_part, dict) for conv_part in input_conv])
+        
+        prompt_template = secalign.PROMPT_FORMAT[frontend_delimiters]["prompt_input"]
+
+        inst_str = copy.deepcopy(input_conv[0]["content"])
+        data_str = copy.deepcopy(input_conv[1]["content"])
+        if data_str[-1] != '.' and data_str[-1] != '!' and data_str[-1] != '?': data_str += '.'
+        data_str += ' '
+        
+        data_str += attack_utility.ADV_PREFIX_INDICATOR + secalign.SECALIGN_COMMON_INSTRUCTION + attack_utility.ADV_SUFFIX_INDICATOR
+        static_string = prompt_template.format_map({"instruction": inst_str, "input": data_str})
+
+        input_conv = static_string
+
+    initial_config = {
+        "strategy_type": "random",
+        "prefix_length": 1,
+        "suffix_length": 20,
+        "seed": int(time.time()),
+        "prefix_filter": secalign_filter,
+        "suffix_filter": secalign_filter,
+        "filter_metadata": {
+            "tokenizer": tokenizer
+        }
+    }
+
+    custom_gcg_hyperparameters_1 = {
+        "signal_function": gcg.og_gcg_signal,
+        "true_loss_function": attack_utility.target_logprobs,
+        "max_steps": 500,
+        "topk": 256,
+        "forward_eval_candidates": 512,
+        "substitution_validity_function": secalign_filter
+    }
+    adversarial_parameters_dict_1 = {
+        "init_config": initial_config,
+        "attack_algorithm": "custom_gcg",
+        "attack_hyperparameters": custom_gcg_hyperparameters_1,
+        "early_stop": False,
+        "eval_every_step": True
+    }
+
+    logger.log(adversarial_parameters_dict_1)
+    loss_sequences_control, best_output_sequences_control = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, adversarial_parameters_dict_1, logger)
+    logger.log(loss_sequences_control)
+    logger.log(best_output_sequences_control)
+
+    # custom_gcg_hyperparameters_2 = {
+    #     "signal_function": losses_experimental.attention_metricized_signal_v2,
+    #     "signal_kwargs": {
+    #         "prob_dist_metric": losses_experimental.kl_divergence_wrapped,
+    #         "layer_weight_strategy": "uniform",
+    #         "ideal_attentions": secalign_ideal_attention_v1,
+    #         "ideal_attentions_kwargs": {
+    #             "attention_mask_strategy": "payload_only"
+    #         }
+    #     },
+    #     "true_loss_function": losses_experimental.attention_metricized_v2_true_loss,
+    #     "true_loss_kwargs": {
+    #         "prob_dist_metric": losses_experimental.kl_divergence_wrapped,
+    #         "layer_weight_strategy": "uniform",
+    #         "ideal_attentions": secalign_ideal_attention_v1,
+    #         "ideal_attentions_kwargs": {
+    #             "attention_mask_strategy": "payload_only"
+    #         }
+    #     },
+    #     "max_steps": 300,
+    #     "topk": 256,
+    #     "forward_eval_candidates": 512,
+    #     "substitution_validity_function": secalign_filter,
+    # }
+    # adversarial_parameters_dict_2 = {
+    #     "init_config": initial_config,
+    #     "attack_algorithm": "custom_gcg",
+    #     "attack_hyperparameters": custom_gcg_hyperparameters_2,
+    #     "early_stop": False,
+    #     "eval_every_step": True
+        
+    # }
+
+    # logger.log(adversarial_parameters_dict_2)
+    # loss_sequences, best_output_sequences = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, adversarial_parameters_dict_2, logger)
+    # logger.log(loss_sequences)
+    # logger.log(best_output_sequences)
+
+
+def maybe_load_secalign_defended_model(model_name, defence):
+    if (model_name, defence) in secalign.MODEL_REL_PATHS:
+        return secalign.load_defended_model(model_name, defence, attn_implementation="eager", device_map="auto", use_cache=False)
+    else:
+        model = transformers.AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation="eager", device_map="auto")
+        tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
+        return model, tokenizer, None
 
 if __name__ == "__main__":
 
-    EXPT_FOLDER = "logs/runs30"
+    EXPT_FOLDER = "logs/debug_logs"
     shutil.copy(__file__, EXPT_FOLDER)
 
-    for (model_name, defence) in secalign.MODEL_REL_PATHS:
-        if "instruct" not in model_name.lower():
-            continue
-        if "defence" == "undefended":
-            continue
-        try:
-            model, tokenizer, frontend_delimiters = secalign.load_defended_model(model_name, defence)
-            attack_secalign_model()
-        except Exception:
-            traceback.print_exc()
+    NUM_TARGETS_TO_SAMPLE = 5
+    model_name = "meta-llama-instruct"
+    defence = "secalign"
+    try:
+        model, tokenizer, frontend_delimiters = maybe_load_secalign_defended_model(model_name, defence)
+    except Exception:
+        traceback.print_exc()
 
+    with open(secalign.ALPACAFARM_DATASET_PATH, "r") as alpacaeval_file:
+        alpacaeval = json.load(alpacaeval_file)
+    alpacaeval = [x for x in alpacaeval if ((x["input"] != "") and (x["datasplit"] == "eval"))]
+    alpacaeval_convs_raw = [
+        [
+            {
+                "role": "system",
+                "content": x["instruction"]
+            },
+            {
+                "role": "user",
+                "content": x["input"]
+            }
+        ]
+        for x in alpacaeval
+    ]
+        # alpacaeval_convs_attack_primed = [
+        #     [
+        #         {
+        #             "role": "system",
+        #             "content": x[0]["content"]
+        #         },
+        #         {
+        #             "role": "user",
+        #             "content": x[1]["content"] + attack_utility.ADV_PREFIX_INDICATOR + secalign.SECALIGN_COMMON_INSTRUCTION + attack_utility.ADV_SUFFIX_INDICATOR
+        #         }
+        #     ]
+        #     for x in alpacaeval_convs_raw
+        # ]
 
-
-
-    # MODEL_PATH = "/data/models/hf/Meta-Llama-3-8B-Instruct"
-    # model = transformers.AutoModelForCausalLM.from_pretrained(MODEL_PATH, device_map="auto", torch_dtype=torch.float16, attn_implementation="flash_attention_2")
-    # tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_PATH)
-    # tokenizer.pad_token_id = tokenizer.eos_token_id
-    # model.generation_config.pad_token_id = tokenizer.pad_token_id
-    # with open(f"data/purplellama_indirect.json", "r") as purplellama_indirect_file:
-    #     purplellama_data = json.load(purplellama_indirect_file)
-
-    # ADVBENCH_PATH = "data/advbench_harmful_behaviors.csv"    
-    # EXPT_FOLDER = "logs/runs24"
-    # if not os.path.exists(EXPT_FOLDER):
-    #     os.mkdir(EXPT_FOLDER)
-    # shutil.copy(__file__, EXPT_FOLDER)
-    
-    # for i in range(3, 5):
-    #     for rand_restart in range(3):
-    #         expt_id = f"run_{str(datetime.datetime.now()).replace("-","").replace(" ","").replace(":","").replace(".","")}"
-    #         logger = experiment_logger.ExperimentLogger(f"{EXPT_FOLDER}/{expt_id}")
-    #         logger.log(model.__repr__(), example_num=i, rand_restart=rand_restart)
-    #         attack_advbench(ADVBENCH_PATH, i, model, tokenizer, logger=logger)
+    example_targets = alpacaeval_convs_raw
+    for example_num, example_target in enumerate(example_targets):
+        expt_id = f"run_{str(datetime.datetime.now()).replace("-","").replace(" ","").replace(":","").replace(".","")}"
+        logger = experiment_logger.ExperimentLogger(f"{EXPT_FOLDER}/{expt_id}")
+        logger.log(model.__repr__(), defence=defence, example_num=example_num)
+        example_target = {
+            "input_conv": example_target,
+            "target": secalign.SECALIGN_HARD_TARGETS[0]
+        }
+        attack_secalign_model(example_target, model, tokenizer, frontend_delimiters, logger)
+        del model
+        gc.collect()
+        torch.cuda.empty_cache()

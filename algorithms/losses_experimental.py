@@ -1,20 +1,10 @@
 import torch
 import transformers
-import json
-import typing
-import pickle as pkl
-from contextlib import contextmanager
-import time
-import datetime
 import gc
-import shutil
-import pandas as pd
+import typing
 
 import utils.attack_utility as attack_utility
 import utils.experiment_logger as experiment_logger
-
-import algorithms.gcg as gcg
-import algorithms.autodan as autodan
 
 def process_batch_attentions(
     model: transformers.AutoModelForCausalLM,
@@ -151,7 +141,8 @@ def attention_weight_signal_v1(
     logger: experiment_logger.ExperimentLogger,
     *,
     layer_weight_strategy: str = "uniform",
-    attention_mask_strategy: str = "payload_only"
+    attention_mask_strategy: str = "payload_only",
+    **kwargs
 ):
     optim_mask: torch.tensor = masks_data["optim_mask"]
     target_mask: torch.tensor = masks_data["target_mask"]
@@ -201,6 +192,7 @@ def attention_weight_loss_v1(
     *,
     layer_weight_strategy: str = "uniform",
     attention_mask_strategy: str = "payload_only",
+    **kwargs
 ):
     """
     Compute attention weight loss with dynamic batching that automatically adjusts
@@ -227,234 +219,128 @@ def attention_weight_loss_v1(
     )    
     return -final_result
 
-@experiment_logger.log_parameters(exclude=["model", "tokenizer"])
-def adversarial_opt(
-    model: transformers.AutoModelForCausalLM,
-    tokenizer: transformers.AutoTokenizer,
-    input_template: str | typing.List[typing.Dict[str, str]],
-    target_output_str: str,
-    adversarial_parameters_dict: typing.Dict,
-    logger: experiment_logger.ExperimentLogger
+def smart_layer_weight_strategy(
+    model,
+    tokenizer,
+    layer_weight_strategy,
+    ideal_attentions,
+    input_points = None,
+    masks_data = None,
+    **kwargs
 ):
+    assert isinstance(ideal_attentions, torch.Tensor) and ideal_attentions.dim() == 5 # (layer, batch, attention head, row, column)
 
-    init_config = adversarial_parameters_dict["init_config"]
-    adv_prefix_init, adv_suffix_init = attack_utility.initialize_adversarial_strings(tokenizer, init_config)
-    if isinstance(input_template, str):
-        input_tokenized_data = attack_utility.string_masks(tokenizer, input_template, adv_prefix_init, adv_suffix_init, target_output_str)
-    elif isinstance(input_template, list):
-        input_tokenized_data = attack_utility.conversation_masks(tokenizer, input_template, adv_prefix_init, adv_suffix_init, target_output_str)
+    if isinstance(layer_weight_strategy, str):
+        if layer_weight_strategy == "uniform":
+            layer_weight_strategy = torch.ones(ideal_attentions.shape[:-1], dtype=ideal_attentions.dtype)
+        elif layer_weight_strategy == "increasing":            
+            layer_weight_strategy = torch.stack([(1 + i) * torch.ones(ideal_attentions.shape[1:-1]) for i in range(int(ideal_attentions.shape[0]))])
+        elif layer_weight_strategy == "decreasing":
+            layer_weight_strategy = torch.stack(list(reversed([(1 + i) * torch.ones(ideal_attentions.shape[1:-1]) for i in range(int(ideal_attentions.shape[0]))])))
+    elif isinstance(layer_weight_strategy, int):
+        assert layer_weight_strategy < ideal_attentions.shape[0]
+        layer_weight_strategy_tensor = torch.zeros(ideal_attentions.shape[:-1], dtype=ideal_attentions.dtype)
+        layer_weight_strategy_tensor[layer_weight_strategy, :, :, :] = 1
+        layer_weight_strategy = layer_weight_strategy_tensor
+    elif isinstance(layer_weight_strategy, torch.Tensor):
+        assert layer_weight_strategy.shape == ideal_attentions.shape[:-1]
+        pass
+    elif callable(layer_weight_strategy): # This is the fine-grained case where we do more detailed stuff, hopefully we never need this
+        layer_weight_strategy = layer_weight_strategy(model, tokenizer, input_points, masks_data, **kwargs)
 
+    assert isinstance(layer_weight_strategy, torch.Tensor) and layer_weight_strategy.dim() == 4 and layer_weight_strategy.shape == ideal_attentions.shape[:-1]
+    
+    return layer_weight_strategy
 
-    attack_algorithm = adversarial_parameters_dict["attack_algorithm"]
-    if attack_algorithm == "gcg":
-        loss_sequences, best_output_sequences = gcg.gcg(model, tokenizer, input_tokenized_data, adversarial_parameters_dict["attack_hyperparameters"], logger)
-        logger.log(loss_sequences)
-        logger.log(best_output_sequences)
-        return loss_sequences, best_output_sequences, None
-    elif attack_algorithm == "custom_gcg":
-        early_stop = adversarial_parameters_dict.get("early_stop", True)
-        eval_every_step = adversarial_parameters_dict.get("eval_every_step", True),
-        identical_outputs_before_stop = adversarial_parameters_dict.get("identical_outputs_before_stop", 5)
-        generation_config = adversarial_parameters_dict.get("generation_config", attack_utility.DEFAULT_TEXT_GENERATION_CONFIG)
+def smart_ideal_attentions(
+    model,
+    tokenizer,
+    ideal_attentions,
+    input_points = None,
+    masks_data = None,
+    **kwargs    
+):
+    if isinstance(ideal_attentions, torch.Tensor):
+        return ideal_attentions
+    elif callable(ideal_attentions):
+        return ideal_attentions(model, tokenizer, input_points, masks_data, **kwargs)
 
-        logprobs_sequences, best_output_sequences = gcg.custom_gcg(model,
-            tokenizer,
-            input_tokenized_data,
-            adversarial_parameters_dict["attack_hyperparameters"],
-            logger,
-            early_stop=early_stop,
-            eval_every_step=eval_every_step,
-            identical_outputs_before_stop=identical_outputs_before_stop,
-            generation_config=generation_config
-        )
-        logger.log(logprobs_sequences)
-        logger.log(best_output_sequences)
-        return logprobs_sequences, best_output_sequences
-    elif attack_algorithm == "autodan":
-        early_stop = adversarial_parameters_dict.get("early_stop", True)
-        eval_every_step = adversarial_parameters_dict.get("eval_every_step", True)
-        identical_outputs_before_stop = adversarial_parameters_dict.get("identical_outputs_before_stop", 5)
-        generation_config = adversarial_parameters_dict.get("generation_config", attack_utility.DEFAULT_TEXT_GENERATION_CONFIG)
-
-        logprobs_sequences, best_output_sequences = autodan.autodan(model,
-            tokenizer,
-            input_tokenized_data,
-            adversarial_parameters_dict["attack_hyperparameters"],
-            logger,
-            early_stop=early_stop,
-            eval_every_step=eval_every_step,
-            identical_outputs_before_stop=identical_outputs_before_stop,
-            generation_config=generation_config
-        )
-        logger.log(logprobs_sequences)
-        logger.log(best_output_sequences)
-        return logprobs_sequences, best_output_sequences
-
-@experiment_logger.log_parameters(exclude=["model", "tokenizer"])
-def attack_purplellama_indirect(
-    purplellama_data,
-    example_num,
+def attention_metricized_signal_v2(
     model: transformers.AutoModelForCausalLM,
     tokenizer: transformers.AutoTokenizer,
+    input_points,
+    masks_data,
+    topk,
     logger: experiment_logger.ExperimentLogger,
     *,
-    add_eot_to_target=True
+    prob_dist_metric,
+    ideal_attentions,
+    layer_weight_strategy,
+    **kwargs
 ):
-    purplellama_example = purplellama_data[example_num]
-    input_conversation = [
-            {
-                "role": "system",
-                "content":  purplellama_example["test_case_prompt"]
-            },
-            {
-                "role": "user",
-                "content": purplellama_example["user_input_wrapper"]
-            }
-        ]
-
-    target_string = purplellama_example["target"]
-    if add_eot_to_target:
-        if "lama" in model.__repr__():
-            target_string = target_string + "<|eot_id|>"
     
-    initial_config = {
-        "strategy_type": "random",
-        "prefix_length": 25,
-        "suffix_length": 25,
-        "seed": int(time.time())
-    }
+    ideal_attention_kwargs = kwargs.get("ideal_attentions_kwargs", {})
+    ideal_attentions = smart_ideal_attentions(model, tokenizer, ideal_attentions, input_points, masks_data, **ideal_attention_kwargs)
 
-    
-    custom_gcg_hyperparameters_1 = {
-        "signal_function": attention_weight_signal_v1,
-        "signal_kwargs": {
-            "layer_weight_strategy": "only_first",
-            "attention_mask_strategy": "payload_only"
-        },
-        "true_loss_function": attention_weight_loss_v1,
-        "true_loss_kwargs": {
-            "layer_weight_strategy": "only_first",
-            "attention_mask_strategy": "payload_only"
-        },
-        "max_steps": 150,
-        "topk": 256,
-        "forward_eval_candidates": 512,
-    }
+    layer_weight_strategy = smart_layer_weight_strategy(model, tokenizer, layer_weight_strategy, ideal_attentions, input_points, masks_data)
 
-    adversarial_parameters_dict_1 = {
-        "init_config": initial_config,
-        "attack_algorithm": "custom_gcg",
-        "attack_hyperparameters": custom_gcg_hyperparameters_1,
-        "early_stop": False,
-        "eval_every_step": True
-    }
+    optim_mask: torch.tensor = masks_data["optim_mask"]
+    target_mask: torch.tensor = masks_data["target_mask"]
 
-    logger.log(adversarial_parameters_dict_1, example_num=example_num)
-    loss_sequences, best_output_sequences = adversarial_opt(model, tokenizer, input_conversation, target_string, adversarial_parameters_dict_1, logger)
-    logger.log(loss_sequences, example_num=example_num)
-    logger.log(best_output_sequences, example_num=example_num)
+    one_hot_tensor = torch.nn.functional.one_hot(input_points.clone().detach(), num_classes=len(tokenizer.vocab)).to(dtype=model.dtype)
+    one_hot_tensor.requires_grad_()
+    embedding_tensor = model.get_input_embeddings().weight[:len(tokenizer.vocab)]
+    inputs_embeds = torch.unsqueeze(one_hot_tensor.to(embedding_tensor.device) @ embedding_tensor, 0)
+    model_output = model(inputs_embeds=inputs_embeds, output_attentions=True, return_dict=True)
+    true_attentions = torch.stack([attention[:, :, target_mask - 1, :] for attention in model_output.attentions])
+    loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions, true_attentions, layer_weight_strategy=layer_weight_strategy)
+    loss_tensor.backward()
+    grad_optims = (one_hot_tensor.grad[optim_mask, :])
+    best_tokens_indices = grad_optims.topk(topk, dim=-1).indices
+    return best_tokens_indices    
 
-    custom_gcg_hyperparameters_2 = {
-        "signal_function": attention_weight_signal_v1,
-        "signal_kwargs": {
-            "layer_weight_strategy": "uniform",
-            "attention_mask_strategy": "payload_only"
-        },
-        "true_loss_function": attention_weight_loss_v1,
-        "true_loss_kwargs": {
-            "layer_weight_strategy": "uniform",
-            "attention_mask_strategy": "payload_only"
-        },
-        "max_steps": 150,
-        "topk": 256,
-        "forward_eval_candidates": 512,
-    }
-    adversarial_parameters_dict_2 = {
-        "init_config": initial_config,
-        "attack_algorithm": "custom_gcg",
-        "attack_hyperparameters": custom_gcg_hyperparameters_2,
-        "early_stop": False,
-        "eval_every_step": True
-    }
-
-    logger.log(adversarial_parameters_dict_2, example_num=example_num)
-    loss_sequences, best_output_sequences = adversarial_opt(model, tokenizer, input_conversation, target_string, adversarial_parameters_dict_2, logger)
-    logger.log(loss_sequences, example_num=example_num)
-    logger.log(best_output_sequences, example_num=example_num)
-
-    custom_gcg_hyperparameters_3 = {
-        "signal_function": gcg.og_gcg_signal,
-        "max_steps": 150,
-        "topk": 256,
-        "forward_eval_candidates": 512,
-    }
-
-    adversarial_parameters_dict_3 = {
-        "init_config": initial_config,
-        "attack_algorithm": "custom_gcg",
-        "attack_hyperparameters": custom_gcg_hyperparameters_3,
-        "early_stop": False,
-        "eval_every_step": True
-    }
-
-    logger.log(adversarial_parameters_dict_3, example_num=example_num)
-    loss_sequences, best_output_sequences = adversarial_opt(model, tokenizer, input_conversation, target_string, adversarial_parameters_dict_3, logger)
-    logger.log(loss_sequences, example_num=example_num)
-    logger.log(best_output_sequences, example_num=example_num)
-
-
-# def attack_agentharm(
-#     attack_idx,
-#     agentharm_path = "/data/AgentHarm/benchmark/harmful_behaviors_test_public.json"
-# ):
-#     with open(agentharm_path) as agentharm_dataset_file:
-#         agentharm_dataset = json.load(agentharm_dataset_file)["behaviors"]
-    
-#     for target_behvaior in agentharm_dataset:
-
-@experiment_logger.log_parameters(exclude=["model", "tokenizer"])
-def attack_advbench(
-    advbench_data_path: str,
-    example_num: int,
+def attention_metricized_v2_true_loss(
     model: transformers.AutoModelForCausalLM,
     tokenizer: transformers.AutoTokenizer,
-    logger: experiment_logger.ExperimentLogger
+    input_points,
+    masks_data,
+    target_tokens,
+    logger: experiment_logger.ExperimentLogger,
+    *,
+    prob_dist_metric,
+    ideal_attentions,
+    layer_weight_strategy,
+    **kwargs
 ):
-    adv_bench_data = pd.read_csv(advbench_data_path)
-    adv_bench_example = adv_bench_data.iloc[example_num].to_dict()
-    malicious_inst = "<ADV_PREFIX>" + adv_bench_example["goal"] + "<ADV_SUFFIX>"
-    target_string = adv_bench_example["target"]
-    input_conversation = [
-        {
-            "role": "user",
-            "content": malicious_inst
-        }
-    ]
+    ideal_attention_kwargs = kwargs.get("ideal_attentions_kwargs", {})
+    ideal_attentions = smart_ideal_attentions(model, tokenizer, ideal_attentions, input_points, masks_data, **ideal_attention_kwargs)
+    layer_weight_strategy = smart_layer_weight_strategy(model, tokenizer, layer_weight_strategy, ideal_attentions, input_points, masks_data)
 
-    initial_config = {
-        "strategy_type": "random",
-        "prefix_length": 0,
-        "suffix_length": 1,
-        "seed": int(time.time())
-    }
-    autodan_hyperparameters = {
-        "signal_function": autodan.og_autodan_signal,
-        "topk": 4096,
-        "autodan_signal_weight": 100,
-        "autodan_true_weight": 100,
-        "sampling_temperature": 1,
-        "max_steps": 200,
-        "forward_eval_candidates": 512,
-    }
-    autodan_adversarial_parameters_dict = {
-        "init_config": initial_config,
-        "attack_algorithm": "autodan",
-        "attack_hyperparameters": autodan_hyperparameters,
-        "early_stop": False,
-        "eval_every_step": True
-    }
+    target_mask: torch.tensor = masks_data["target_mask"]
+    loss_tensors_list = []
+    for batch_logits, batch_true_attentions in attack_utility.bulk_forward_iter(model, input_points):
+        true_attentions = torch.stack([attention[:, :, target_mask - 1, :] for attention in batch_true_attentions])
+        loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions, true_attentions, layer_weight_strategy=layer_weight_strategy)
+        loss_tensors_list.append(loss_tensor)
+    loss_tensor = torch.cat(loss_tensors_list)
+    return loss_tensor
 
-    logger.log(autodan_adversarial_parameters_dict, example_num=example_num)
-    loss_sequences, best_output_sequences = adversarial_opt(model, tokenizer, input_conversation, target_string, autodan_adversarial_parameters_dict, logger)
-    logger.log(loss_sequences, example_num=example_num)
-    logger.log(best_output_sequences, example_num=example_num)
+
+def kl_divergence_wrapped(
+    model,
+    tokenizer,
+    input_points,
+    masks_data,
+    ideal_attentions,
+    true_attentions,
+    *,
+    layer_weight_strategy
+):
+    assert true_attentions.shape == ideal_attentions.shape
+    true_attentions_log_space = torch.log_softmax(true_attentions, dim=-1)
+    divvied_up_losses = torch.nn.functional.kl_div(true_attentions_log_space, ideal_attentions.to(true_attentions_log_space.device), reduction="none")
+    batch_first_att_strategy = torch.transpose(layer_weight_strategy, 1, 0)
+    batch_first_losses =  torch.transpose(divvied_up_losses.sum(dim=-1), 1, 0)
+    product = batch_first_att_strategy.to(batch_first_losses.device) * batch_first_losses
+    result = product.sum(dim=(1, 2, 3))
+    return result

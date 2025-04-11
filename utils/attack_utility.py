@@ -5,6 +5,16 @@ import random
 import gc
 import utils.experiment_logger as experiment_logger
 
+def invertibility_filter(token_ids, **kwargs):
+    tokenizer = kwargs.get("tokenizer", None)
+    if tokenizer is None:
+        raise ValueError(f"Tokenizer required for evaluating invertibility, you complete dingus.")
+    
+    try:
+        bool_val = all(tokenizer.encode(tokenizer.decode(token_ids), add_special_tokens=False, return_tensors="pt")[0] == token_ids)
+        return bool_val
+    except Exception:
+        return False
 
 def analyze_conversation_tokens(conversation, tokenizer):
     """
@@ -98,7 +108,7 @@ def string_masks(
     input_string_template: str,
     adv_pre_init: str,
     adv_suf_init: str,
-    target_string: str
+    target_string: str,
 ):
     pre_prefix_string = input_string_template.split(ADV_PREFIX_INDICATOR)[0]
     suf_suffix_string = input_string_template.split(ADV_SUFFIX_INDICATOR)[-1]
@@ -442,7 +452,7 @@ def initialize_adversarial_strings(tokenizer: transformers.AutoTokenizer, init_c
                 rand_token = random.randint(0, tokenizer.vocab_size)
                 prefix_random_tokens.append(rand_token)
             prefix_random_tokens = torch.tensor(prefix_random_tokens)
-            if prefix_filter(prefix_random_tokens, filter_metadata=filter_metadata):
+            if prefix_filter(prefix_random_tokens, **filter_metadata):
                 break
         
         while True:
@@ -451,7 +461,7 @@ def initialize_adversarial_strings(tokenizer: transformers.AutoTokenizer, init_c
                 rand_token = random.randint(0, tokenizer.vocab_size)
                 suffix_random_tokens.append(rand_token)
             suffix_random_tokens = torch.tensor(suffix_random_tokens)
-            if suffix_filter(suffix_random_tokens, filter_metadata=filter_metadata):
+            if suffix_filter(suffix_random_tokens, **filter_metadata):
                 break
         
         adv_prefix_init = tokenizer.decode(prefix_random_tokens)
@@ -658,6 +668,8 @@ def bulk_forward_iter(
                 
             except torch.cuda.OutOfMemoryError:
                 # If OOM occurs, recursively process with smaller batch size
+                gc.collect()
+                torch.cuda.empty_cache()
                 sub_iterator = bulk_forward_iter(
                     model, 
                     data_piece, 

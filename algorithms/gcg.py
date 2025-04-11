@@ -178,7 +178,7 @@ def custom_gcg(
 
     signal_function = custom_gcg_hyperparams.get("signal_function", og_gcg_signal)
     true_loss_function = custom_gcg_hyperparams.get("true_loss_function", attack_utility.target_logprobs)
-    substitution_validity_function = custom_gcg_hyperparams.get("substitution_function", None)
+    substitution_validity_function = custom_gcg_hyperparams.get("substitution_validity_function", None)
     signal_kwargs = custom_gcg_hyperparams.get("signal_kwargs", None)
     true_loss_kwargs = custom_gcg_hyperparams.get("true_loss_kwargs", None)
 
@@ -228,10 +228,12 @@ def custom_gcg(
                     continue
                 random_substitution_make = current_best_tokens.clone()
                 random_substitution_make[optim_mask[first_coordinate]] = best_tokens_indices[(first_coordinate, second_coordinate)]
-                if (substitution_validity_function is None) or (substitution_validity_function(random_substitution_make)):
+                if (substitution_validity_function is None) or (substitution_validity_function(random_substitution_make, tokenizer=tokenizer, masks_data=masks_data)):
                     indices_to_sample.add((first_coordinate, second_coordinate))
                     substitutions_set.add(random_substitution_make)
                 else:
+                    SUBSTITUTION_INVALID_STRING = "substitution_invalid"
+                    logger.log(SUBSTITUTION_INVALID_STRING)
                     indices_to_exclude.add((first_coordinate, second_coordinate))
             substitution_data = torch.stack(list(substitutions_set))
 
