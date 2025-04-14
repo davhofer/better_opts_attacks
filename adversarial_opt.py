@@ -25,11 +25,31 @@ def adversarial_opt(
 ):
 
     init_config = adversarial_parameters_dict["init_config"]
-    adv_prefix_init, adv_suffix_init = attack_utility.initialize_adversarial_strings(tokenizer, init_config)
-    if isinstance(input_template, str):
-        input_tokenized_data = attack_utility.string_masks(tokenizer, input_template, adv_prefix_init, adv_suffix_init, target_output_str)
-    elif isinstance(input_template, list):
-        input_tokenized_data = attack_utility.conversation_masks(tokenizer, input_template, adv_prefix_init, adv_suffix_init, target_output_str)
+    num_init_tries = 0
+    while num_init_tries < 100:
+        try:
+            adv_prefix_init, adv_suffix_init = attack_utility.initialize_adversarial_strings(tokenizer, init_config)
+            if isinstance(input_template, str):
+                input_tokenized_data = attack_utility.string_masks(tokenizer, input_template, adv_prefix_init, adv_suffix_init, target_output_str)
+            elif isinstance(input_template, list):
+                input_tokenized_data = attack_utility.conversation_masks(tokenizer, input_template, adv_prefix_init, adv_suffix_init, target_output_str)
+        except Exception as e:
+            INIT_TOKENIZATION_FAILED = f"The given initialization failed due to the following reasons - {str(e)}"
+            logger.log(INIT_TOKENIZATION_FAILED)
+            if init_config["strategy"] != "random":
+                raise ValueError(f"{INIT_TOKENIZATION_FAILED}")
+            new_seed = int(time.time())
+            RETRYING_STRING = f"Retrying with another random seed: {str(new_seed)}"
+            init_config["seed"] = new_seed
+            logger.log(RETRYING_STRING)
+        else:
+            break
+        num_init_tries += 1
+    
+    if num_init_tries >= 99:
+        SEVERAL_INITS_FAILED = "ALL INITS FAILED. RAISING EXCEPTION."
+        logger.log(SEVERAL_INITS_FAILED)
+        raise ValueError(SEVERAL_INITS_FAILED)
 
     attack_algorithm = adversarial_parameters_dict["attack_algorithm"]
     if attack_algorithm == "gcg":

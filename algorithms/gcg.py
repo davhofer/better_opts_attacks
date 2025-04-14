@@ -84,7 +84,7 @@ def gcg(
         logger.log(current_best_tokens, step_num=step_num)
         best_output_sequences.append(current_best_tokens.clone())
         if eval_every_step:
-            generated_output_tokens = model.generate(torch.unsqueeze(current_best_tokens[eval_input_mask], dim=0), attention_mask=torch.unsqueeze(torch.ones(current_best_tokens[eval_input_mask].shape), dim=0), **generation_config)
+            generated_output_tokens = model.generate(torch.unsqueeze(current_best_tokens[eval_input_mask], dim=0).to(model.device), attention_mask=torch.unsqueeze(torch.ones(current_best_tokens[eval_input_mask].shape).to(model.device), dim=0), **generation_config)
             generated_output_string = tokenizer.batch_decode(generated_output_tokens[:, eval_input_mask[-1] + 1 :])[0]
             logger.log(generated_output_string, step_num=step_num)
 
@@ -196,7 +196,7 @@ def custom_gcg(
         initial_logprobs = initial_logprobs.item()
         logger.log(initial_logprobs, step_num=-1)
         logprobs_sequences.append(initial_logprobs)
-        generated_output_tokens = model.generate(torch.unsqueeze(current_best_tokens[eval_input_mask], dim=0), attention_mask=torch.unsqueeze(torch.ones(current_best_tokens[eval_input_mask].shape), dim=0), **generation_config)
+        generated_output_tokens = model.generate(torch.unsqueeze(current_best_tokens[eval_input_mask], dim=0).to(model.device), attention_mask=torch.unsqueeze(torch.ones(current_best_tokens[eval_input_mask].shape), dim=0).to(model.device), **generation_config)
         generated_output_string = tokenizer.batch_decode(generated_output_tokens[:, eval_input_mask[-1] + 1 :])[0]
         logger.log(generated_output_string, step_num=-1)
 
@@ -256,7 +256,7 @@ def custom_gcg(
             logprobs = logprobs.item()
             logger.log(logprobs, step_num=step_num)
             logprobs_sequences.append(logprobs)
-            generated_output_tokens = model.generate(torch.unsqueeze(current_best_tokens[eval_input_mask], dim=0), attention_mask=torch.unsqueeze(torch.ones(current_best_tokens[eval_input_mask].shape), dim=0), **generation_config)
+            generated_output_tokens = model.generate(torch.unsqueeze(current_best_tokens[eval_input_mask], dim=0).to(model.device), attention_mask=torch.unsqueeze(torch.ones(current_best_tokens[eval_input_mask].shape), dim=0).to(model.device), **generation_config)
             generated_output_string = tokenizer.batch_decode(generated_output_tokens[:, eval_input_mask[-1] + 1 :])[0]
             logger.log(generated_output_string, step_num=step_num)
             if early_stop:
