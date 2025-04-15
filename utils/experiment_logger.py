@@ -9,8 +9,12 @@ import contextlib
 from typing import Any, Dict, Optional, Iterator, Callable, TypeVar, Union, cast, List
 import traceback
 import pandas as pd
+import dill
 
 T = TypeVar('T', bound=Callable[..., Any])
+
+shelve.Pickler = dill.Pickler
+shelve.Unpickler = dill.Unpickler
 
 def log_parameters(
     func: Optional[Callable] = None, 

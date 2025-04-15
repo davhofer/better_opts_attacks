@@ -170,6 +170,8 @@ def custom_gcg(
     generation_config
 ):
 
+    logger.log(input_tokenized_data)
+
     input_tokens: torch.tensor = input_tokenized_data["tokens"]
     masks_data = input_tokenized_data["masks"]
     optim_mask: torch.tensor = masks_data["optim_mask"]
@@ -200,6 +202,7 @@ def custom_gcg(
         generated_output_string = tokenizer.batch_decode(generated_output_tokens[:, eval_input_mask[-1] + 1 :])[0]
         logger.log(generated_output_string, step_num=-1)
 
+    step_num = 0
     for step_num in range(custom_gcg_hyperparams["max_steps"]):
         
         best_tokens_indices = signal_function(model, tokenizer, current_best_tokens, masks_data, custom_gcg_hyperparams["topk"], logger, step_num=step_num, **(signal_kwargs or {}))
@@ -232,8 +235,8 @@ def custom_gcg(
                     indices_to_sample.add((first_coordinate, second_coordinate))
                     substitutions_set.add(random_substitution_make)
                 else:
-                    SUBSTITUTION_INVALID_STRING = "substitution_invalid"
-                    logger.log(SUBSTITUTION_INVALID_STRING)
+                    # SUBSTITUTION_INVALID_STRING = "substitution_invalid"
+                    # logger.log(SUBSTITUTION_INVALID_STRING)
                     indices_to_exclude.add((first_coordinate, second_coordinate))
             substitution_data = torch.stack(list(substitutions_set))
 

@@ -11,7 +11,7 @@ def invertibility_filter(token_ids, **kwargs):
         raise ValueError(f"Tokenizer required for evaluating invertibility, you complete dingus.")
     
     try:
-        bool_val = all(tokenizer.encode(tokenizer.decode(token_ids), add_special_tokens=False, return_tensors="pt")[0] == token_ids)
+        bool_val = all(tokenizer.encode(tokenizer.decode(token_ids, clean_up_tokenization_spaces=False), add_special_tokens=False, return_tensors="pt")[0] == token_ids)
         return bool_val
     except Exception:
         return False
@@ -104,109 +104,107 @@ def analyze_conversation_tokens(conversation, tokenizer):
 ADV_SUFFIX_INDICATOR = "<ADV_SUFFIX>"
 ADV_PREFIX_INDICATOR = "<ADV_PREFIX>"
 def string_masks(
-    tokenizer: transformers.AutoTokenizer,
+    tokenizer: "transformers.AutoTokenizer",
     input_string_template: str,
     adv_pre_init: str,
     adv_suf_init: str,
     target_string: str,
+    prefix_placeholder: str = "<ADV_PREFIX>",
+    suffix_placeholder: str = "<ADV_SUFFIX>",
 ):
-    pre_prefix_string = input_string_template.split(ADV_PREFIX_INDICATOR)[0]
-    suf_suffix_string = input_string_template.split(ADV_SUFFIX_INDICATOR)[-1]
+    """
+    Create masks for different parts of a tokenized string.
     
-    payload_string_left = input_string_template.split(ADV_PREFIX_INDICATOR)[-1].split(ADV_SUFFIX_INDICATOR)[0]
-    payload_string_right = input_string_template.split(ADV_SUFFIX_INDICATOR)[0].split(ADV_PREFIX_INDICATOR)[-1]
-    try:
-        assert payload_string_left == payload_string_right
-        payload_string = payload_string_left
-    except AssertionError:
-        raise AssertionError("Payload string mismatch when extracted.")
-
-    pre_prefix_tokens = tokenizer(pre_prefix_string, add_special_tokens=False, return_tensors="pt")["input_ids"][0]
-    suf_suffix_tokens = tokenizer(suf_suffix_string, add_special_tokens=False, return_tensors="pt")["input_ids"][0]
-
-    payload_tokens = tokenizer(payload_string, add_special_tokens=False, return_tensors="pt")["input_ids"][0]
-
-    adv_pre_init_tokens = tokenizer(adv_pre_init, add_special_tokens=False, return_tensors="pt")["input_ids"][0]
-    adv_suf_init_tokens = tokenizer(adv_suf_init, add_special_tokens=False, return_tensors="pt")["input_ids"][0]
+    Args:
+        tokenizer: HuggingFace tokenizer
+        input_string_template: Template string with placeholders for adversarial prefix and suffix
+        adv_pre_init: String to replace prefix_placeholder
+        adv_suf_init: String to replace suffix_placeholder
+        target_string: Target string to be appended after the input string
+        prefix_placeholder: Placeholder for prefix in the template
+        suffix_placeholder: Placeholder for suffix in the template
     
-    target_tokens = tokenizer(target_string, add_special_tokens=False, return_tensors="pt")["input_ids"][0]
-
-    pre_payload_tokens = torch.cat((pre_prefix_tokens, adv_pre_init_tokens)).to(pre_prefix_tokens.dtype)
-    retokenized_pre_payload_tokens = tokenizer(tokenizer.decode(pre_payload_tokens), add_special_tokens=False, return_tensors="pt")["input_ids"][0]
-    if len(retokenized_pre_payload_tokens) == len(pre_payload_tokens):
-        optimizable_prefix_start_index = len(pre_prefix_tokens)
-    elif len(retokenized_pre_payload_tokens) == len(pre_payload_tokens) - 1:
-        optimizable_prefix_start_index = len(pre_prefix_tokens) + 1
+    Returns:
+        Dictionary containing tokens and various masks
+    """
+    # Replace placeholders in the template with the initial strings
+    if prefix_placeholder in input_string_template and suffix_placeholder in input_string_template:
+        prefix_pos = input_string_template.find(prefix_placeholder)
+        suffix_pos = input_string_template.find(suffix_placeholder)
+        
+        # Extract the payload string between placeholders
+        payload_string = input_string_template[prefix_pos + len(prefix_placeholder):suffix_pos]
+        
+        # Create the full text by replacing placeholders
+        full_text = (
+            input_string_template[:prefix_pos] + 
+            adv_pre_init + 
+            payload_string + 
+            adv_suf_init + 
+            input_string_template[suffix_pos + len(suffix_placeholder):]
+        ) + target_string
     else:
-        raise ValueError("Retokenization of break point between pre-prefix and pre-opt-string leads to more than 2 error")
-
-    prefix_plus_payload_tokens = torch.cat((retokenized_pre_payload_tokens, payload_tokens)).to(retokenized_pre_payload_tokens.dtype)
-    retokenized_prefix_plus_payload_tokens = tokenizer(tokenizer.decode(prefix_plus_payload_tokens), add_special_tokens=False, return_tensors="pt")["input_ids"][0]
-    if len(retokenized_prefix_plus_payload_tokens) == len(prefix_plus_payload_tokens):
-        optimizable_prefix_end_index = len(retokenized_pre_payload_tokens)
-    elif len(retokenized_prefix_plus_payload_tokens) == len(prefix_plus_payload_tokens) - 1:
-        optimizable_prefix_end_index = len(retokenized_pre_payload_tokens) - 1
-    else:
-        raise ValueError("Retokenization of break point between pre-opt-string and payload leads to more than 2 error")
-    payload_start_index = optimizable_prefix_end_index + 1
-
-    upto_adv_suf_tokens = torch.cat((retokenized_prefix_plus_payload_tokens, adv_suf_init_tokens)).to(retokenized_prefix_plus_payload_tokens.dtype)
-    retokenized_upto_adv_suf_tokens = tokenizer(tokenizer.decode(upto_adv_suf_tokens), add_special_tokens=False, return_tensors="pt")["input_ids"][0]
-    if len(retokenized_upto_adv_suf_tokens) == len(upto_adv_suf_tokens):
-        optimizable_suffix_start_index = len(prefix_plus_payload_tokens)
-    elif len(retokenized_upto_adv_suf_tokens) == len(upto_adv_suf_tokens) - 1:
-        optimizable_suffix_start_index = len(prefix_plus_payload_tokens) + 1
-    else:
-        raise ValueError("Retokenization of break point between payload and suf-opt-string leads to more than 2 error")
-    payload_end_index = optimizable_suffix_start_index - 1
-
-    upto_suf_suffix_tokens = torch.cat((retokenized_upto_adv_suf_tokens, suf_suffix_tokens)).to(retokenized_upto_adv_suf_tokens.dtype)
-    retokenized_upto_suf_suffix_tokens = tokenizer(tokenizer.decode(upto_suf_suffix_tokens), add_special_tokens=False, return_tensors="pt")["input_ids"][0]
-    if len(retokenized_upto_suf_suffix_tokens) == len(upto_suf_suffix_tokens):
-        optimizable_suffix_end_index = len(retokenized_upto_adv_suf_tokens)
-    elif len(retokenized_upto_suf_suffix_tokens) == len(upto_suf_suffix_tokens) - 1:
-        optimizable_suffix_end_index = len(retokenized_upto_adv_suf_tokens) - 1
-    else:
-        raise ValueError("Retokenization of break point between suf-opt-string and suf-suffix leads to more than 2 error")
-
-    eval_input_mask = torch.arange(0, len(retokenized_upto_suf_suffix_tokens))
-
-    target_string_included_tokens = torch.cat((retokenized_upto_suf_suffix_tokens, target_tokens)).to(retokenized_upto_suf_suffix_tokens.dtype)
-    retokenized_including_target = tokenizer(tokenizer.decode(target_string_included_tokens), add_special_tokens=False, return_tensors="pt")["input_ids"][0]
-    if len(retokenized_including_target) == len(target_string_included_tokens):
-        target_string_start_index = len(retokenized_upto_suf_suffix_tokens)
-        target_string_end_index = len(target_string_included_tokens)
-    else:
-        raise ValueError("Retokenization of string with target is not happening cleanly. Change something please.")
-
-    final_tokens = target_string_included_tokens
-    try:
-        prefix_mask = torch.arange(optimizable_prefix_start_index, optimizable_prefix_end_index)
-    except RuntimeError:
-        prefix_mask = torch.tensor([]).to(final_tokens.dtype)
+        raise ValueError(f"Template must contain both {prefix_placeholder} and {suffix_placeholder}")
     
-    try:
-        suffix_mask = torch.arange(optimizable_suffix_start_index, optimizable_suffix_end_index)
-    except RuntimeError:
-        suffix_mask = torch.tensor([]).to(final_tokens.dtype)
+    # Tokenize the full text
+    encoding = tokenizer(full_text, return_offsets_mapping=True, add_special_tokens=False)
+    tokens = encoding.input_ids
+    char_spans = encoding.offset_mapping
     
-    final_opt_mask = torch.cat((prefix_mask, suffix_mask)).to(prefix_mask.dtype)
-    target_string_mask = torch.arange(target_string_start_index, target_string_end_index)
-    payload_mask = torch.arange(payload_start_index, payload_end_index + 1)
+    # Convert to torch tensor for consistency with the existing code
+    final_tokens = torch.tensor(tokens)
+    seq_length = len(final_tokens)
     
-
+    # Find spans for different components
+    prefix_span = find_clean_token_span(tokenizer, full_text, adv_pre_init, final_tokens)
+    suffix_span = find_clean_token_span(tokenizer, full_text, adv_suf_init, final_tokens)
+    
+    # Create masks using clean token spans
+    prefix_mask = torch.zeros(seq_length, dtype=torch.bool)
+    suffix_mask = torch.zeros(seq_length, dtype=torch.bool)
+    target_mask = torch.zeros(seq_length, dtype=torch.bool)
+    
+    if prefix_span:
+        prefix_mask[prefix_span["start"]:prefix_span["end"]] = True
+    if suffix_span:
+        suffix_mask[suffix_span["start"]:suffix_span["end"]] = True
+    
+    # Create payload mask (between prefix and suffix)
+    payload_mask = torch.zeros(seq_length, dtype=torch.bool)
+    if prefix_span and suffix_span:
+        payload_mask[prefix_span["end"]:suffix_span["start"]] = True
+    
+    # Create target mask
+    target_start = len(full_text) - len(target_string)
+    for i, (start, end) in enumerate(char_spans):
+        if start >= target_start:
+            target_mask[i] = True
+    
+    # Create input mask (everything before target)
+    input_mask = torch.ones(seq_length, dtype=torch.bool)
+    input_mask[target_mask.nonzero()] = False
+    
+    # Convert boolean masks to index tensors for compatibility with existing code
+    prefix_indices = torch.where(prefix_mask)[0]
+    suffix_indices = torch.where(suffix_mask)[0]
+    payload_indices = torch.where(payload_mask)[0]
+    target_indices = torch.where(target_mask)[0]
+    input_indices = torch.where(input_mask)[0]
+    
+    # Create the optim_mask as the combination of prefix and suffix indices
+    optim_mask = torch.cat([prefix_indices, suffix_indices])
+    
     return {
         "tokens": final_tokens,
         "masks": {
-            "optim_mask": final_opt_mask,
-            "prefix_mask": prefix_mask,
-            "suffix_mask": suffix_mask,
-            "target_mask": target_string_mask,
-            "input_mask": eval_input_mask,
-            "payload_mask": payload_mask
+            "optim_mask": optim_mask,
+            "prefix_mask": prefix_indices,
+            "suffix_mask": suffix_indices,
+            "target_mask": target_indices,
+            "input_mask": input_indices,
+            "payload_mask": payload_indices
         }
     }
-
 def find_clean_token_span(tokenizer: transformers.PreTrainedTokenizer, 
                          full_text: str,
                          target_text: str,
@@ -240,7 +238,7 @@ def find_clean_token_span(tokenizer: transformers.PreTrainedTokenizer,
         
     # Verify the decoded tokens match a substring of target_text
     span_tokens = full_tokens[token_start:token_end]
-    decoded = tokenizer.decode(span_tokens)
+    decoded = tokenizer.decode(span_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=False)
     
     assert decoded in target_text, f"Decoded string: {decoded} not a subset of target_text: {target_text}"
     return {
@@ -503,7 +501,7 @@ def initialize_adversarial_strings(tokenizer: transformers.AutoTokenizer, init_c
     
     return adv_prefix_init, adv_suffix_init
 
-BULK_FORWARD_DEFAULT_BSZ = 64
+BULK_FORWARD_DEFAULT_BSZ = 512
 DEFAULT_GENERATION_PARAMS = {
     "logprobs": True,
 }

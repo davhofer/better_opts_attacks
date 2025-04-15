@@ -13,6 +13,7 @@ import random
 import copy
 import argparse
 import multiprocessing
+import sys
 
 import utils.attack_utility as attack_utility
 import utils.experiment_logger as experiment_logger
@@ -222,7 +223,7 @@ def attack_secalign_model(
 ):
     
     input_conv = example_target["input_conv"]
-    target = example_target["target"]
+    target = example_target["target"].lower()
 
     if convert_to_secalign_format:
         assert isinstance(input_conv, list) and all([isinstance(conv_part, dict) for conv_part in input_conv])
@@ -234,16 +235,15 @@ def attack_secalign_model(
         if data_str[-1] != '.' and data_str[-1] != '!' and data_str[-1] != '?': data_str += '.'
         data_str += ' '
         
-        data_str += attack_utility.ADV_PREFIX_INDICATOR + secalign.SECALIGN_COMMON_INSTRUCTION + attack_utility.ADV_SUFFIX_INDICATOR
+        data_str += attack_utility.ADV_PREFIX_INDICATOR + secalign.SECALIGN_COMMON_INSTRUCTION.capitalize() + attack_utility.ADV_SUFFIX_INDICATOR
         static_string = prompt_template.format_map({"instruction": inst_str, "input": data_str})
 
         input_conv = static_string
 
     initial_config = {
-        "strategy_type": "random",
-        "prefix_length": 1,
-        "suffix_length": 20,
-        "seed": int(time.time()),
+        "strategy_type": "fixed_string",
+        "adv_prefix_init": "",
+        "adv_suffix_init": " ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !",
         "prefix_filter": secalign_filter,
         "suffix_filter": secalign_filter,
         "filter_metadata": {
@@ -254,7 +254,7 @@ def attack_secalign_model(
     custom_gcg_hyperparameters_1 = {
         "signal_function": gcg.og_gcg_signal,
         "true_loss_function": attack_utility.target_logprobs,
-        "max_steps": 5,
+        "max_steps": 1,
         "topk": 256,
         "forward_eval_candidates": 512,
         "substitution_validity_function": secalign_filter
@@ -320,15 +320,34 @@ def maybe_load_secalign_defended_model(model_name, defence, **kwargs):
         return model, tokenizer, None
 
 
-def run_expt_on_single_gpu(expt_folder_prefix: str, self_device_idx, **kwargs):
-    expt_folder = f"{expt_folder_prefix}_{str(self_device_idx)}"
+def run_expt_on_single_gpu(expt_folder_prefix: str, self_device_idx, example_targets, **kwargs):
+    expt_folder = f"{expt_folder_prefix}/expt_{str(self_device_idx)}"
+    if not os.path.exists(expt_folder):
+        os.mkdir(expt_folder)
     shutil.copy(__file__, expt_folder)
     model_name = "meta-llama-instruct"
     defence = "secalign"
+    torch.cuda.set_device(self_device_idx)
     try:
         model, tokenizer, frontend_delimiters = maybe_load_secalign_defended_model(model_name, defence, device_map=f"cuda:{str(self_device_idx)}")
+        model.generation_config.pad_token_id = tokenizer.pad_token_id
     except Exception:
         traceback.print_exc()
+    
+    for example_num, example_target in enumerate(example_targets):
+        expt_id = f"run_{str(datetime.datetime.now()).replace("-","").replace(" ","").replace(":","").replace(".","")}"
+        logger = experiment_logger.ExperimentLogger(f"{expt_folder}/{expt_id}")
+        logger.log(model_name, example_num=example_num)
+        example_target = {
+            "input_conv": example_target,
+            "target": secalign.SECALIGN_HARD_TARGETS[0]
+        }
+        attack_secalign_model(example_target, model, tokenizer, frontend_delimiters, logger)
+        gc.collect()
+        torch.cuda.empty_cache()
+
+
+if __name__ == "__main__":
 
     with open(secalign.ALPACAFARM_DATASET_PATH, "r") as alpacaeval_file:
         alpacaeval = json.load(alpacaeval_file)
@@ -347,24 +366,15 @@ def run_expt_on_single_gpu(expt_folder_prefix: str, self_device_idx, **kwargs):
         for x in alpacaeval
     ]
 
-    model.generation_config.pad_token_id = tokenizer.pad_token_id
-    example_targets = alpacaeval_convs_raw
-    for example_num, example_target in enumerate(example_targets[60: 70]):
-        expt_id = f"run_{str(datetime.datetime.now()).replace("-","").replace(" ","").replace(":","").replace(".","")}"
-        logger = experiment_logger.ExperimentLogger(f"{expt_folder}/{expt_id}")
-        logger.log(model_name, example_num=example_num)
-        example_target = {
-            "input_conv": example_target,
-            "target": secalign.SECALIGN_HARD_TARGETS[0]
-        }
-        attack_secalign_model(example_target, model, tokenizer, frontend_delimiters, logger)
-        gc.collect()
-        torch.cuda.empty_cache()
-
-
-if __name__ == "__main__":
-
-    EXPT_FOLDER_PREFIX = "logs/secalign_break_gcg"
+    EXPT_FOLDER_PREFIX = f"logs/secalign_corrected_4"
     gpu_ids = list(range(torch.cuda.device_count()))
-    process_pool = multiprocessing.Pool(len(gpu_ids))
-    final_results = process_pool.map(run_expt_on_single_gpu, [(EXPT_FOLDER_PREFIX, i) for i in gpu_ids])
+    NUM_EXPERIMENTS_ON_GPU = len(alpacaeval_convs_raw) // len(gpu_ids)
+    alpacaeval_batched = [alpacaeval_convs_raw[(NUM_EXPERIMENTS_ON_GPU) * x: (NUM_EXPERIMENTS_ON_GPU)* (x + 1)] for x in gpu_ids]
+    multiprocessing.set_start_method("spawn", force=True)
+    do_mp = True
+    if do_mp:
+        with multiprocessing.Pool(len(gpu_ids)) as process_pool:
+            final_results = process_pool.starmap(run_expt_on_single_gpu, [(EXPT_FOLDER_PREFIX, i, alpacaeval_batched[i]) for i in gpu_ids])
+    else:
+        for i in gpu_ids:
+            run_expt_on_single_gpu(EXPT_FOLDER_PREFIX, i, alpacaeval_batched[i])
