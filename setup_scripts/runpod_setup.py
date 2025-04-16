@@ -40,8 +40,6 @@ for model_path in model_paths:
     if os.path.exists(model_path): print(model_path, 'already exists.'); continue
     model_dir = model_path.split('/')[0]
     os.makedirs(model_dir, exist_ok=True)
-    cmd = 'wget -P {model_big_path}/{model_dir} https://dl.fbaipublicfiles.com/SecAlign/{model_path} && unzip {model_path} -d {model_dir} && rm {model_path}'.format(model_path=model_path + '.zip', model_dir=model_dir, model_big_path=model_big_path)
+    cmd = 'cd {model_big_path} && wget -P {model_dir} https://dl.fbaipublicfiles.com/SecAlign/{model_path} && unzip {model_path} -d {model_dir} && rm {model_path}'.format(model_path=model_path + '.zip', model_dir=model_dir, model_big_path=model_big_path)
     print(cmd)
     os.system(cmd)
-
-
