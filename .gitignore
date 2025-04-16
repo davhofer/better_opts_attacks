@@ -168,8 +168,7 @@ cython_debug/
 #.idea/
 
 .vscode
-*.bash
 *.pkl
 logs/*
 *.out
-secalign_refactored/secalign_models/
+secalign_refactored/secalign_models/*
