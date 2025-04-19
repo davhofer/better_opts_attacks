@@ -360,24 +360,10 @@ def _tokenize_fn(strings, tokenizer):
     }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+def maybe_load_secalign_defended_model(model_name, defence, **kwargs):
+    if (model_name, defence) in MODEL_REL_PATHS:
+        return load_defended_model(model_name, defence, attn_implementation="eager", use_cache=False, **kwargs)
+    else:
+        model = transformers.AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation="eager", device_map="auto")
+        tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
+        return model, tokenizer, None

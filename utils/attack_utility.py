@@ -238,7 +238,7 @@ def find_clean_token_span(tokenizer: transformers.PreTrainedTokenizer,
         
     # Verify the decoded tokens match a substring of target_text
     span_tokens = full_tokens[token_start:token_end]
-    decoded = tokenizer.decode(span_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+    decoded = tokenizer.decode(span_tokens, clean_up_tokenization_spaces=False)
     
     assert decoded in target_text, f"Decoded string: {decoded} not a subset of target_text: {target_text}"
     return {
@@ -640,10 +640,11 @@ def bulk_logits_from_embeds_iter(
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
 
+BULK_ATT_FORWARD_DEFAULT_SIZE=32
 def bulk_forward_iter(
     model: transformers.AutoModelForCausalLM,
     data: torch.tensor,
-    batch_size=BULK_FORWARD_DEFAULT_BSZ,
+    batch_size=BULK_ATT_FORWARD_DEFAULT_SIZE,
     generation_params=DEFAULT_GENERATION_PARAMS
 ) -> typing.Iterator[typing.Tuple[torch.Tensor, typing.Tuple[torch.Tensor, ...]]]:
     """

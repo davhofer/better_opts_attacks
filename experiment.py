@@ -11,9 +11,9 @@ import gc
 import traceback
 import random
 import copy
-import argparse
 import multiprocessing
 import sys
+import peft
 
 import utils.attack_utility as attack_utility
 import utils.experiment_logger as experiment_logger
@@ -209,7 +209,6 @@ def secalign_ideal_attention_v1(
         raise ValueError(f"attention_mask_strategy {attention_mask_strategy} is not implemented yet.")
     return torch.stack(attentions)[:, :, :, target_mask - 1, :]
 
-    
 
 @experiment_logger.log_parameters(exclude=["model", "tokenizer"])
 def attack_secalign_model(
@@ -239,11 +238,35 @@ def attack_secalign_model(
         static_string = prompt_template.format_map({"instruction": inst_str, "input": data_str})
 
         input_conv = static_string
+    else:
+        input_conv = [
+            {
+                "role": input_conv[0]["role"],
+                "content": input_conv[0]["content"]
+            },
+            {
+                "role": input_conv[1]["role"],
+                "content": input_conv[1]["content"] + " " + attack_utility.ADV_PREFIX_INDICATOR + " " +  secalign.SECALIGN_COMMON_INSTRUCTION + " " + attack_utility.ADV_SUFFIX_INDICATOR
+            }
+        ]
+
+    # initial_config = {
+    #     "strategy_type": "fixed_string",
+    #     "adv_prefix_init": "",
+    #     "adv_suffix_init": " ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !",
+    #     "prefix_filter": secalign_filter,
+    #     "suffix_filter": secalign_filter,
+    #     "filter_metadata": {
+    #         "tokenizer": tokenizer
+    #     }
+    # }
+
 
     initial_config = {
-        "strategy_type": "fixed_string",
-        "adv_prefix_init": "",
-        "adv_suffix_init": " ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !",
+        "strategy_type": "random",
+        "prefix_length": 25,
+        "suffix_length": 25,
+        "seed": int(time.time()),
         "prefix_filter": secalign_filter,
         "suffix_filter": secalign_filter,
         "filter_metadata": {
@@ -251,76 +274,72 @@ def attack_secalign_model(
         }
     }
 
-    custom_gcg_hyperparameters_1 = {
-        "signal_function": gcg.og_gcg_signal,
-        "true_loss_function": attack_utility.target_logprobs,
-        "max_steps": 1,
-        "topk": 256,
-        "forward_eval_candidates": 512,
-        "substitution_validity_function": secalign_filter
-    }
-    adversarial_parameters_dict_1 = {
-        "init_config": initial_config,
-        "attack_algorithm": "custom_gcg",
-        "attack_hyperparameters": custom_gcg_hyperparameters_1,
-        "early_stop": False,
-        "eval_every_step": True
-    }
-
-    logger.log(adversarial_parameters_dict_1)
-    loss_sequences_control, best_output_sequences_control = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, adversarial_parameters_dict_1, logger)
-    logger.log(loss_sequences_control)
-    logger.log(best_output_sequences_control)
-
-    # custom_gcg_hyperparameters_2 = {
-    #     "signal_function": losses_experimental.attention_metricized_signal_v2,
-    #     "signal_kwargs": {
-    #         "prob_dist_metric": losses_experimental.kl_divergence_wrapped,
-    #         "layer_weight_strategy": "uniform",
-    #         "ideal_attentions": secalign_ideal_attention_v1,
-    #         "ideal_attentions_kwargs": {
-    #             "attention_mask_strategy": "payload_only"
-    #         }
-    #     },
-    #     "true_loss_function": losses_experimental.attention_metricized_v2_true_loss,
-    #     "true_loss_kwargs": {
-    #         "prob_dist_metric": losses_experimental.kl_divergence_wrapped,
-    #         "layer_weight_strategy": "uniform",
-    #         "ideal_attentions": secalign_ideal_attention_v1,
-    #         "ideal_attentions_kwargs": {
-    #             "attention_mask_strategy": "payload_only"
-    #         }
-    #     },
+    # custom_gcg_hyperparameters_1 = {
+    #     "signal_function": gcg.og_gcg_signal,
+    #     "true_loss_function": attack_utility.target_logprobs,
     #     "max_steps": 300,
     #     "topk": 256,
     #     "forward_eval_candidates": 512,
-    #     "substitution_validity_function": secalign_filter,
+    #     "substitution_validity_function": secalign_filter
     # }
-    # adversarial_parameters_dict_2 = {
+    # adversarial_parameters_dict_1 = {
     #     "init_config": initial_config,
     #     "attack_algorithm": "custom_gcg",
-    #     "attack_hyperparameters": custom_gcg_hyperparameters_2,
+    #     "attack_hyperparameters": custom_gcg_hyperparameters_1,
     #     "early_stop": False,
     #     "eval_every_step": True
-        
     # }
 
-    # logger.log(adversarial_parameters_dict_2)
-    # loss_sequences, best_output_sequences = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, adversarial_parameters_dict_2, logger)
-    # logger.log(loss_sequences)
-    # logger.log(best_output_sequences)
+    # logger.log(adversarial_parameters_dict_1)
+    # loss_sequences_control, best_output_sequences_control = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, adversarial_parameters_dict_1, logger)
+    # logger.log(loss_sequences_control)
+    # logger.log(best_output_sequences_control)
+
+    if isinstance(model, peft.PeftModel):
+        layers_obj = model.base_model.model.model.layers
+    elif isinstance(model, transformers.LlamaForCausalLM):
+        layers_obj = model.model.layers
+
+    custom_gcg_hyperparameters_2 = {
+        "signal_function": losses_experimental.attention_metricized_signal_v2,
+        "signal_kwargs": {
+            "prob_dist_metric": losses_experimental.kl_divergence_wrapped,
+            "layer_weight_strategy": "uniform",
+            "attention_mask_strategy": "payload_only",
+            "ideal_attentions": secalign_ideal_attention_v1,
+            "ideal_attentions_kwargs": {
+                "attention_mask_strategy": "payload_only"
+            }
+        },
+        "true_loss_function": losses_experimental.attention_metricized_v2_true_loss,
+        "true_loss_kwargs": {
+            "prob_dist_metric": losses_experimental.kl_divergence_wrapped,
+            "layer_weight_strategy": "uniform",
+            "attention_mask_strategy": "payload_only",
+            "ideal_attentions": secalign_ideal_attention_v1,
+            "ideal_attentions_kwargs": {
+                "attention_mask_strategy": "payload_only"
+            }
+        },
+        "max_steps": 300,
+        "topk": 256,
+        "forward_eval_candidates": 128,
+        "substitution_validity_function": secalign_filter,
+    }
+    adversarial_parameters_dict_2 = {
+        "init_config": initial_config,
+        "attack_algorithm": "custom_gcg",
+        "attack_hyperparameters": custom_gcg_hyperparameters_2,
+        "early_stop": False,
+        "eval_every_step": True   
+    }
+    logger.log(adversarial_parameters_dict_2)
+    loss_sequences, best_output_sequences = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, adversarial_parameters_dict_2, logger)
+    logger.log(loss_sequences)
+    logger.log(best_output_sequences)
 
 
-def maybe_load_secalign_defended_model(model_name, defence, **kwargs):
-    if (model_name, defence) in secalign.MODEL_REL_PATHS:
-        return secalign.load_defended_model(model_name, defence, attn_implementation="eager", use_cache=False, **kwargs)
-    else:
-        model = transformers.AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation="eager", device_map="auto")
-        tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
-        return model, tokenizer, None
-
-
-def run_expt_on_single_gpu(expt_folder_prefix: str, self_device_idx, example_targets, **kwargs):
+def run_secalign_eval_on_single_gpu(expt_folder_prefix: str, self_device_idx, example_targets, **kwargs):
     expt_folder = f"{expt_folder_prefix}/expt_{str(self_device_idx)}"
     if not os.path.exists(expt_folder):
         os.mkdir(expt_folder)
@@ -329,7 +348,7 @@ def run_expt_on_single_gpu(expt_folder_prefix: str, self_device_idx, example_tar
     defence = "secalign"
     torch.cuda.set_device(self_device_idx)
     try:
-        model, tokenizer, frontend_delimiters = maybe_load_secalign_defended_model(model_name, defence, device_map=f"cuda:{str(self_device_idx)}")
+        model, tokenizer, frontend_delimiters = secalign.maybe_load_secalign_defended_model(model_name, defence, device_map=f"cuda:{str(self_device_idx)}")
         model.generation_config.pad_token_id = tokenizer.pad_token_id
     except Exception:
         traceback.print_exc()
@@ -342,7 +361,32 @@ def run_expt_on_single_gpu(expt_folder_prefix: str, self_device_idx, example_tar
             "input_conv": example_target,
             "target": secalign.SECALIGN_HARD_TARGETS[0]
         }
-        attack_secalign_model(example_target, model, tokenizer, frontend_delimiters, logger)
+        attack_secalign_model(example_target, model, tokenizer, frontend_delimiters, logger, **kwargs)
+        gc.collect()
+        torch.cuda.empty_cache()
+
+def run_secalign_eval_auto(expt_folder_prefix, example_targets, **kwargs):
+    expt_folder = f"{expt_folder_prefix}"
+    if not os.path.exists(expt_folder):
+        os.mkdir(expt_folder)
+    shutil.copy(__file__, expt_folder)
+    model_name = "meta-llama-instruct"
+    defence = "secalign"
+    try:
+        model, tokenizer, frontend_delimiters = secalign.maybe_load_secalign_defended_model(model_name, defence, device_map=f"auto")
+        model.generation_config.pad_token_id = tokenizer.pad_token_id
+    except Exception:
+        traceback.print_exc()
+    
+    for example_num, example_target in enumerate(example_targets):
+        expt_id = f"run_{str(datetime.datetime.now()).replace("-","").replace(" ","").replace(":","").replace(".","")}"
+        logger = experiment_logger.ExperimentLogger(f"{expt_folder}/{expt_id}")
+        logger.log(model_name, example_num=example_num)
+        example_target = {
+            "input_conv": example_target,
+            "target": secalign.SECALIGN_HARD_TARGETS[0]
+        }
+        attack_secalign_model(example_target, model, tokenizer, frontend_delimiters, logger, **kwargs)
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -366,15 +410,14 @@ if __name__ == "__main__":
         for x in alpacaeval
     ]
 
-    EXPT_FOLDER_PREFIX = f"logs/secalign_corrected_4"
-    gpu_ids = list(range(torch.cuda.device_count()))
-    NUM_EXPERIMENTS_ON_GPU = len(alpacaeval_convs_raw) // len(gpu_ids)
-    alpacaeval_batched = [alpacaeval_convs_raw[(NUM_EXPERIMENTS_ON_GPU) * x: (NUM_EXPERIMENTS_ON_GPU)* (x + 1)] for x in gpu_ids]
-    multiprocessing.set_start_method("spawn", force=True)
-    do_mp = True
+    EXPT_FOLDER_PREFIX = f"logs/layer_weight_0"
+    do_mp = False
     if do_mp:
+        gpu_ids = list(range(torch.cuda.device_count()))
+        NUM_EXPERIMENTS_ON_GPU = len(alpacaeval_convs_raw) // len(gpu_ids)
+        alpacaeval_batched = [alpacaeval_convs_raw[(NUM_EXPERIMENTS_ON_GPU) * x: (NUM_EXPERIMENTS_ON_GPU)* (x + 1)] for x in gpu_ids]
+        multiprocessing.set_start_method("spawn", force=True)
         with multiprocessing.Pool(len(gpu_ids)) as process_pool:
-            final_results = process_pool.starmap(run_expt_on_single_gpu, [(EXPT_FOLDER_PREFIX, i, alpacaeval_batched[i]) for i in gpu_ids])
+            final_results = process_pool.starmap(run_secalign_eval_on_single_gpu, [(EXPT_FOLDER_PREFIX, i, alpacaeval_batched[i]) for i in gpu_ids])
     else:
-        for i in gpu_ids:
-            run_expt_on_single_gpu(EXPT_FOLDER_PREFIX, i, alpacaeval_batched[i])
+        final_results = run_secalign_eval_auto(EXPT_FOLDER_PREFIX, alpacaeval_convs_raw[:5], convert_to_secalign_format=False)

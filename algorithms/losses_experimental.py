@@ -119,7 +119,15 @@ def process_batch_attentions(
                 ][..., attention_mask].sum(dim=[1,2,3])
                 for weight, layer_attention in zip(weights, batch_attentions)
             ))).sum(dim=0)
-                    
+        elif isinstance(layer_weight_strategy, list):
+            batch_final = torch.stack(list((
+                weight * layer_attention[
+                    :,
+                    :,
+                    target_mask - 1
+                ][..., attention_mask].sum(dim=[1,2,3])
+                for weight, layer_attention in zip(layer_weight_strategy, batch_attentions)
+            ))).sum(dim=0)
         # Clean up
 
         del batch_attentions
@@ -174,6 +182,10 @@ def attention_weight_signal_v1(
     elif layer_weight_strategy == "decreasing":
         num_weights = relevant_attentions.shape[0]
         weights_tensor = torch.tensor(list(reversed(list(range(num_weights))))) + 1
+        final_tensor = (weights_tensor.view(num_weights, 1, 1, 1).to(relevant_attentions.device) * relevant_attentions).sum()
+    elif isinstance(layer_weight_strategy, list):
+        num_weights = relevant_attentions.shape[0]
+        weights_tensor = torch.tensor(layer_weight_strategy)
         final_tensor = (weights_tensor.view(num_weights, 1, 1, 1).to(relevant_attentions.device) * relevant_attentions).sum()
     else:
         raise ValueError(f"layer_weight_strategy parameter {layer_weight_strategy} not recognized")
@@ -318,11 +330,13 @@ def attention_metricized_v2_true_loss(
 
     target_mask: torch.tensor = masks_data["target_mask"]
     loss_tensors_list = []
+    num_processed = 0
     for batch_logits, batch_true_attentions in attack_utility.bulk_forward_iter(model, input_points):
         true_attentions = torch.stack([attention[:, :, target_mask - 1, :] for attention in batch_true_attentions])
-        loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions, true_attentions, layer_weight_strategy=layer_weight_strategy)
+        loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions[:, num_processed:num_processed + true_attentions.shape[1], ...], true_attentions, layer_weight_strategy=layer_weight_strategy[:, num_processed:num_processed + true_attentions.shape[1], ...])
+        num_processed += true_attentions.shape[1]
         loss_tensors_list.append(loss_tensor)
-    loss_tensor = torch.cat(loss_tensors_list)
+        loss_tensor = torch.cat(loss_tensors_list)
     return loss_tensor
 
 
@@ -337,10 +351,10 @@ def kl_divergence_wrapped(
     layer_weight_strategy
 ):
     assert true_attentions.shape == ideal_attentions.shape
-    true_attentions_log_space = torch.log_softmax(true_attentions, dim=-1)
+    true_attentions_log_space = torch.log(true_attentions + 1e-10)
     divvied_up_losses = torch.nn.functional.kl_div(true_attentions_log_space, ideal_attentions.to(true_attentions_log_space.device), reduction="none")
     batch_first_att_strategy = torch.transpose(layer_weight_strategy, 1, 0)
-    batch_first_losses =  torch.transpose(divvied_up_losses.sum(dim=-1), 1, 0)
+    batch_first_losses = torch.nansum(torch.transpose(divvied_up_losses, 1, 0), dim=-1)
     product = batch_first_att_strategy.to(batch_first_losses.device) * batch_first_losses
     result = product.sum(dim=(1, 2, 3))
     return result
