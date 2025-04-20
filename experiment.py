@@ -190,12 +190,12 @@ def secalign_ideal_attention_v1(
         attention_mask = payload_mask
         attention_mask_formatted = torch.zeros(input_points.shape)
         attention_mask_formatted[:, attention_mask] = 1
-        attentions = model(input_ids=input_points, attention_mask=attention_mask_formatted, output_attentions=True).attentions
+        attentions = model(input_ids=input_points.to(model.device), attention_mask=attention_mask_formatted.to(model.device), output_attentions=True).attentions
     elif attention_mask_strategy == "payload_and_control":
         attention_mask = torch.cat((payload_mask, control_mask))
         attention_mask_formatted = torch.zeros(input_points.shape)
         attention_mask_formatted[:, attention_mask] = 1
-        attentions = model(input_ids=input_points, attention_mask=attention_mask_formatted, output_attentions=True).attentions
+        attentions = model(input_ids=input_points.to(model.device), attention_mask=attention_mask_formatted.to(model.device), output_attentions=True).attentions
     # Removing these two, because it might be that we can emulate the squeezed
     # versions with just modifying position_ids???
     # 
@@ -303,7 +303,7 @@ def attack_secalign_model(
     custom_gcg_hyperparameters_2 = {
         "signal_function": losses_experimental.attention_metricized_signal_v2,
         "signal_kwargs": {
-            "prob_dist_metric": losses_experimental.kl_divergence_wrapped,
+            "prob_dist_metric": losses_experimental.kl_divergence_payload_only,
             "layer_weight_strategy": "uniform",
             "attention_mask_strategy": "payload_only",
             "ideal_attentions": secalign_ideal_attention_v1,
@@ -313,7 +313,7 @@ def attack_secalign_model(
         },
         "true_loss_function": losses_experimental.attention_metricized_v2_true_loss,
         "true_loss_kwargs": {
-            "prob_dist_metric": losses_experimental.kl_divergence_wrapped,
+            "prob_dist_metric": losses_experimental.kl_divergence_payload_only,
             "layer_weight_strategy": "uniform",
             "attention_mask_strategy": "payload_only",
             "ideal_attentions": secalign_ideal_attention_v1,
@@ -361,7 +361,7 @@ def run_secalign_eval_on_single_gpu(expt_folder_prefix: str, self_device_idx, ex
             "input_conv": example_target,
             "target": secalign.SECALIGN_HARD_TARGETS[0]
         }
-        attack_secalign_model(example_target, model, tokenizer, frontend_delimiters, logger, **kwargs)
+        attack_secalign_model(example_target, model, tokenizer, frontend_delimiters, logger, convert_to_secalign_format=False)
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -386,7 +386,7 @@ def run_secalign_eval_auto(expt_folder_prefix, example_targets, **kwargs):
             "input_conv": example_target,
             "target": secalign.SECALIGN_HARD_TARGETS[0]
         }
-        attack_secalign_model(example_target, model, tokenizer, frontend_delimiters, logger, **kwargs)
+        attack_secalign_model(example_target, model, tokenizer, frontend_delimiters, logger, convert_to_secalign_format=False)
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -408,10 +408,10 @@ if __name__ == "__main__":
             }
         ]
         for x in alpacaeval
-    ]
+    ][52:]
 
-    EXPT_FOLDER_PREFIX = f"logs/layer_weight_0"
-    do_mp = False
+    EXPT_FOLDER_PREFIX = f"logs/serious_attack_2"
+    do_mp = True
     if do_mp:
         gpu_ids = list(range(torch.cuda.device_count()))
         NUM_EXPERIMENTS_ON_GPU = len(alpacaeval_convs_raw) // len(gpu_ids)
@@ -420,4 +420,4 @@ if __name__ == "__main__":
         with multiprocessing.Pool(len(gpu_ids)) as process_pool:
             final_results = process_pool.starmap(run_secalign_eval_on_single_gpu, [(EXPT_FOLDER_PREFIX, i, alpacaeval_batched[i]) for i in gpu_ids])
     else:
-        final_results = run_secalign_eval_auto(EXPT_FOLDER_PREFIX, alpacaeval_convs_raw[:5], convert_to_secalign_format=False)
+        final_results = run_secalign_eval_auto(EXPT_FOLDER_PREFIX, alpacaeval_convs_raw[:5])

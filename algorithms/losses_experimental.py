@@ -340,7 +340,7 @@ def attention_metricized_v2_true_loss(
     return loss_tensor
 
 
-def kl_divergence_wrapped(
+def kl_divergence_payload_only(
     model,
     tokenizer,
     input_points,
@@ -351,6 +351,10 @@ def kl_divergence_wrapped(
     layer_weight_strategy
 ):
     assert true_attentions.shape == ideal_attentions.shape
+
+    payload_mask = masks_data["payload_mask"]
+    true_attentions = true_attentions[:, :, :, :, payload_mask]
+    ideal_attentions = ideal_attentions[:, :, :, :, payload_mask]
     true_attentions_log_space = torch.log(true_attentions + 1e-10)
     divvied_up_losses = torch.nn.functional.kl_div(true_attentions_log_space, ideal_attentions.to(true_attentions_log_space.device), reduction="none")
     batch_first_att_strategy = torch.transpose(layer_weight_strategy, 1, 0)

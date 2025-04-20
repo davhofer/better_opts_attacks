@@ -640,7 +640,7 @@ def bulk_logits_from_embeds_iter(
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
 
-BULK_ATT_FORWARD_DEFAULT_SIZE=32
+BULK_ATT_FORWARD_DEFAULT_SIZE=128
 def bulk_forward_iter(
     model: transformers.AutoModelForCausalLM,
     data: torch.tensor,
