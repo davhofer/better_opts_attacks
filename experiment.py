@@ -300,36 +300,92 @@ def attack_secalign_model(
     elif isinstance(model, transformers.LlamaForCausalLM):
         layers_obj = model.model.layers
 
-    custom_gcg_hyperparameters_2 = {
-        "signal_function": losses_experimental.attention_metricized_signal_v2,
-        "signal_kwargs": {
-            "prob_dist_metric": losses_experimental.kl_divergence_payload_only,
-            "layer_weight_strategy": "uniform",
-            "attention_mask_strategy": "payload_only",
-            "ideal_attentions": secalign_ideal_attention_v1,
-            "ideal_attentions_kwargs": {
-                "attention_mask_strategy": "payload_only"
-            }
-        },
-        "true_loss_function": losses_experimental.attention_metricized_v2_true_loss,
-        "true_loss_kwargs": {
-            "prob_dist_metric": losses_experimental.kl_divergence_payload_only,
-            "layer_weight_strategy": "uniform",
-            "attention_mask_strategy": "payload_only",
-            "ideal_attentions": secalign_ideal_attention_v1,
-            "ideal_attentions_kwargs": {
-                "attention_mask_strategy": "payload_only"
-            }
-        },
-        "max_steps": 300,
-        "topk": 256,
-        "forward_eval_candidates": 128,
-        "substitution_validity_function": secalign_filter,
-    }
+    # custom_gcg_hyperparameters_2 = {
+    #     "signal_function": losses_experimental.attention_metricized_signal_v2,
+    #     "signal_kwargs": {
+    #         "prob_dist_metric": losses_experimental.kl_divergence_payload_only,
+    #         "layer_weight_strategy": "uniform",
+    #         "attention_mask_strategy": "payload_only",
+    #         "ideal_attentions": secalign_ideal_attention_v1,
+    #         "ideal_attentions_kwargs": {
+    #             "attention_mask_strategy": "payload_only"
+    #         }
+    #     },
+    #     "true_loss_function": losses_experimental.attention_metricized_v2_true_loss,
+    #     "true_loss_kwargs": {
+    #         "prob_dist_metric": losses_experimental.kl_divergence_payload_only,
+    #         "layer_weight_strategy": "uniform",
+    #         "attention_mask_strategy": "payload_only",
+    #         "ideal_attentions": secalign_ideal_attention_v1,
+    #         "ideal_attentions_kwargs": {
+    #             "attention_mask_strategy": "payload_only"
+    #         }
+    #     },
+    #     "max_steps": 300,
+    #     "topk": 256,
+    #     "forward_eval_candidates": 128,
+    #     "substitution_validity_function": secalign_filter,
+    # }
     adversarial_parameters_dict_2 = {
         "init_config": initial_config,
-        "attack_algorithm": "custom_gcg",
-        "attack_hyperparameters": custom_gcg_hyperparameters_2,
+        "attack_algorithm": "sequential",
+        "attack_hyperparameters": [
+            {
+                "attack_algorithm": "custom_gcg",
+                "signal_function": losses_experimental.attention_weight_signal_v1,
+                "signal_kwargs": {
+                    "attention_mask_strategy": "payload_only",
+                    "layer_weight_strategy": "uniform"
+                },
+                "true_loss_function": losses_experimental.attention_weight_loss_v1,
+                "true_loss_kwargs": {
+                    "attention_mask_strategy": "payload_only",
+                    "layer_weight_strategy": "uniform",
+                },
+                "max_steps": 200,
+                "topk": 256,
+                "forward_eval_candidates": 512,
+                "substitution_validity_function": secalign_filter
+            },
+            {
+                "attack_algorithm": "custom_gcg",
+                "signal_function": losses_experimental.attention_metricized_signal_v2,
+                "signal_kwargs": {
+                    "prob_dist_metric": losses_experimental.kl_divergence_payload_only,
+                    "layer_weight_strategy": "uniform",
+                    "attention_mask_strategy": "payload_only",
+                    "ideal_attentions": secalign_ideal_attention_v1,
+                    "ideal_attentions_kwargs": {
+                        "attention_mask_strategy": "payload_only"
+                    }
+                },
+                "true_loss_function": losses_experimental.attention_metricized_v2_true_loss,
+                "true_loss_kwargs": {
+                    "prob_dist_metric": losses_experimental.kl_divergence_payload_only,
+                    "layer_weight_strategy": "uniform",
+                    "attention_mask_strategy": "payload_only",
+                    "ideal_attentions": secalign_ideal_attention_v1,
+                    "ideal_attentions_kwargs": {
+                        "attention_mask_strategy": "payload_only"
+                    }
+                },
+                "max_steps": 200,
+                "topk": 256,
+                "forward_eval_candidates": 128,
+                "substitution_validity_function": secalign_filter,
+            },
+            {
+                "attack_algorithm": "custom_gcg",
+                "attack_hyperparameters": {
+                    "signal_function": gcg.og_gcg_signal,
+                    "true_loss_function": attack_utility.target_logprobs,
+                    "max_steps": 200,
+                    "topk": 256,
+                    "forward_eval_candidates": 512,
+                    "substitution_validity_function": secalign_filter
+                }
+            },
+        ],
         "early_stop": False,
         "eval_every_step": True   
     }
@@ -408,11 +464,11 @@ if __name__ == "__main__":
             }
         ]
         for x in alpacaeval
-    ][52:]
+    ]
 
-    EXPT_FOLDER_PREFIX = f"logs/serious_attack_2"
-    do_mp = True
+    do_mp = False
     if do_mp:
+        EXPT_FOLDER_PREFIX = "logs/serious_attack_4"
         gpu_ids = list(range(torch.cuda.device_count()))
         NUM_EXPERIMENTS_ON_GPU = len(alpacaeval_convs_raw) // len(gpu_ids)
         alpacaeval_batched = [alpacaeval_convs_raw[(NUM_EXPERIMENTS_ON_GPU) * x: (NUM_EXPERIMENTS_ON_GPU)* (x + 1)] for x in gpu_ids]
@@ -420,4 +476,5 @@ if __name__ == "__main__":
         with multiprocessing.Pool(len(gpu_ids)) as process_pool:
             final_results = process_pool.starmap(run_secalign_eval_on_single_gpu, [(EXPT_FOLDER_PREFIX, i, alpacaeval_batched[i]) for i in gpu_ids])
     else:
+        EXPT_FOLDER_PREFIX = f"logs/debug_logs"
         final_results = run_secalign_eval_auto(EXPT_FOLDER_PREFIX, alpacaeval_convs_raw[:5])

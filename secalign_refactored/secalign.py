@@ -149,7 +149,7 @@ def recursive_filter(s):
     return s
 
 def load_model_and_tokenizer(model_path, tokenizer_path=None, **kwargs):
-    model = transformers.AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.float16, trust_remote_code=True, **kwargs)
+    model = transformers.AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True, **kwargs)
     tokenizer_path = model_path if tokenizer_path is None else tokenizer_path
     try:
         tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True, use_fast=True)
@@ -364,6 +364,6 @@ def maybe_load_secalign_defended_model(model_name, defence, **kwargs):
     if (model_name, defence) in MODEL_REL_PATHS:
         return load_defended_model(model_name, defence, attn_implementation="eager", use_cache=False, **kwargs)
     else:
-        model = transformers.AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation="eager", device_map="auto")
+        model = transformers.AutoModelForCausalLM.from_pretrained(model_name, attn_implementation="eager", **kwargs)
         tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
         return model, tokenizer, None

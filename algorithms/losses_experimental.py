@@ -355,8 +355,31 @@ def kl_divergence_payload_only(
     payload_mask = masks_data["payload_mask"]
     true_attentions = true_attentions[:, :, :, :, payload_mask]
     ideal_attentions = ideal_attentions[:, :, :, :, payload_mask]
-    true_attentions_log_space = torch.log(true_attentions + 1e-10)
+    true_attentions_log_space = torch.log(true_attentions + 1e-6)
     divvied_up_losses = torch.nn.functional.kl_div(true_attentions_log_space, ideal_attentions.to(true_attentions_log_space.device), reduction="none")
+    batch_first_att_strategy = torch.transpose(layer_weight_strategy, 1, 0)
+    batch_first_losses = torch.nansum(torch.transpose(divvied_up_losses, 1, 0), dim=-1)
+    product = batch_first_att_strategy.to(batch_first_losses.device) * batch_first_losses
+    result = product.sum(dim=(1, 2, 3))
+    return result
+
+def cross_entropy_payload_only(
+    model,
+    tokenizer,
+    input_points,
+    masks_data,
+    ideal_attentions,
+    true_attentions,
+    *,
+    layer_weight_strategy
+):
+    assert true_attentions.shape == ideal_attentions.shape
+
+    payload_mask = masks_data["payload_mask"]
+    true_attentions = true_attentions[:, :, :, :, payload_mask]
+    ideal_attentions = ideal_attentions[:, :, :, :, payload_mask]
+    true_attentions_log_space = torch.log(true_attentions + 1e-6)
+    divvied_up_losses = torch.nn.functional.cross_entropy(true_attentions_log_space, ideal_attentions.to(true_attentions_log_space.device), reduction="none")
     batch_first_att_strategy = torch.transpose(layer_weight_strategy, 1, 0)
     batch_first_losses = torch.nansum(torch.transpose(divvied_up_losses, 1, 0), dim=-1)
     product = batch_first_att_strategy.to(batch_first_losses.device) * batch_first_losses

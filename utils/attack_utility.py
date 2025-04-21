@@ -722,3 +722,11 @@ DEFAULT_TEXT_GENERATION_CONFIG = {
     "do_sample": False,
     "max_new_tokens": 200
 }
+
+def default_best_choice_function(model, tokenizer, input_tokenized_data, best_tokens_sequences, logger, **kwargs):
+    masks_data = input_tokenized_data["masks"]
+    best_index = torch.argmin(target_logprobs(model, tokenizer, best_tokens_sequences, masks_data, input_tokenized_data["tokens"][masks_data["target_mask"]], logger))
+    return {
+        "tokens": best_tokens_sequences[best_index],
+        "masks": masks_data
+    }
