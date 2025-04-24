@@ -385,3 +385,27 @@ def cross_entropy_payload_only(
     product = batch_first_att_strategy.to(batch_first_losses.device) * batch_first_losses
     result = product.sum(dim=(1, 2, 3))
     return result
+
+
+def pointwise_sum_of_differences_payload_only(
+    model,
+    tokenizer,
+    input_points,
+    masks_data,
+    ideal_attentions,
+    true_attentions,
+    *,
+    layer_weight_strategy
+):
+    assert true_attentions.shape == ideal_attentions.shape
+
+    payload_mask = masks_data["payload_mask"]
+    true_attentions = true_attentions[:, :, :, :, payload_mask]
+    ideal_attentions = ideal_attentions[:, :, :, :, payload_mask]
+
+    divvied_up_losses = ideal_attentions.to(true_attentions.device) - true_attentions
+    batch_first_att_strategy = torch.transpose(layer_weight_strategy, 1, 0)
+    batch_first_losses = torch.nansum(torch.transpose(divvied_up_losses, 1, 0), dim=-1)
+    product = batch_first_att_strategy.to(batch_first_losses.device) * batch_first_losses
+    result = product.sum(dim=(1, 2, 3))
+    return result

@@ -148,8 +148,11 @@ def recursive_filter(s):
             if f in s: filtered = False
     return s
 
-def load_model_and_tokenizer(model_path, tokenizer_path=None, **kwargs):
-    model = transformers.AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True, **kwargs)
+def load_model_and_tokenizer(model_path, tokenizer_path=None, load_model=True, **kwargs):
+    if load_model:
+        model = transformers.AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True, **kwargs)
+    else:
+        model = None
     tokenizer_path = model_path if tokenizer_path is None else tokenizer_path
     try:
         tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True, use_fast=True)
@@ -185,31 +188,33 @@ def smart_tokenizer_and_embedding_resize(
     special_tokens_dict,
     tokenizer: transformers.PreTrainedTokenizer,
     model: transformers.PreTrainedModel,
+    load_model=True
 ):
     """Resize tokenizer and embedding.
 
     Note: This is the unoptimized version that may make your embedding size not be divisible by 64.
     """
     num_new_tokens = tokenizer.add_special_tokens(special_tokens_dict)
-    model.resize_token_embeddings(len(tokenizer))
+    if load_model:
+        model.resize_token_embeddings(len(tokenizer))
 
-    REAL_DELIMITERS_INIT_EMBD_IND, _ = get_embedding_indices(tokenizer)
+        REAL_DELIMITERS_INIT_EMBD_IND, _ = get_embedding_indices(tokenizer)
 
-    if num_new_tokens > 0:
-        input_embeddings = model.get_input_embeddings().weight.data
-        output_embeddings = model.get_output_embeddings().weight.data
+        if num_new_tokens > 0:
+            input_embeddings = model.get_input_embeddings().weight.data
+            output_embeddings = model.get_output_embeddings().weight.data
 
-        input_embeddings_avg = input_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
-        output_embeddings_avg = output_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
+            input_embeddings_avg = input_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
+            output_embeddings_avg = output_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
 
-        input_embeddings[-num_new_tokens] = input_embeddings_avg
-        output_embeddings[-num_new_tokens] = output_embeddings_avg
+            input_embeddings[-num_new_tokens] = input_embeddings_avg
+            output_embeddings[-num_new_tokens] = output_embeddings_avg
 
-        for i in range(len(config.SPECIAL_DELM_TOKENS)): ### initialize real delimiter's embedding by the existing ones
-            input_embeddings[-num_new_tokens+i+1] = input_embeddings[REAL_DELIMITERS_INIT_EMBD_IND[i]]
-            output_embeddings[-num_new_tokens+i+1] = output_embeddings[REAL_DELIMITERS_INIT_EMBD_IND[i]]
+            for i in range(len(config.SPECIAL_DELM_TOKENS)): ### initialize real delimiter's embedding by the existing ones
+                input_embeddings[-num_new_tokens+i+1] = input_embeddings[REAL_DELIMITERS_INIT_EMBD_IND[i]]
+                output_embeddings[-num_new_tokens+i+1] = output_embeddings[REAL_DELIMITERS_INIT_EMBD_IND[i]]
 
-def load_lora_model(model_name_or_path, **kwargs):
+def load_lora_model(model_name_or_path, load_model=True, **kwargs):
     configs = model_name_or_path.split('/')[-1].split('_') + ['Frontend-Delimiter-Placeholder', 'None']
     for alignment in ['dpo', 'kto', 'orpo']:
         base_model_index = model_name_or_path.find(alignment) - 1
@@ -220,7 +225,7 @@ def load_lora_model(model_name_or_path, **kwargs):
 
     base_model_path = model_name_or_path[:base_model_index] if base_model_index else model_name_or_path
     frontend_delimiters = configs[1] if configs[1] in config.DELIMITERS else base_model_path.split('/')[-1]
-    model, tokenizer = load_model_and_tokenizer(base_model_path, **kwargs)
+    model, tokenizer = load_model_and_tokenizer(base_model_path, load_model=load_model, **kwargs)
     
     special_tokens_dict = dict()
     special_tokens_dict["pad_token"] = config.DEFAULT_TOKENS['pad_token']
@@ -229,9 +234,9 @@ def load_lora_model(model_name_or_path, **kwargs):
     special_tokens_dict["unk_token"] = config.DEFAULT_TOKENS['unk_token']
     special_tokens_dict["additional_special_tokens"] = config.SPECIAL_DELM_TOKENS
 
-    smart_tokenizer_and_embedding_resize(special_tokens_dict=special_tokens_dict, tokenizer=tokenizer, model=model)
+    smart_tokenizer_and_embedding_resize(special_tokens_dict=special_tokens_dict, tokenizer=tokenizer, model=model, load_model=load_model)
     tokenizer.model_max_length = 512 ### the default value is too large for model.generation_config.max_new_tokens
-    if base_model_index:
+    if base_model_index and load_model:
         model = PeftModel.from_pretrained(model, model_name_or_path, is_trainable=False)
     return model, tokenizer, frontend_delimiters
 
