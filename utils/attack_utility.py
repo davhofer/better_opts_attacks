@@ -755,7 +755,7 @@ def generate_valid_input_tokenized_data(
         except Exception as e:
             INIT_TOKENIZATION_FAILED = f"The given initialization failed due to the following reasons - {str(e)}"
             logger.log(INIT_TOKENIZATION_FAILED)
-            if new_init_config["strategy"] != "random":
+            if new_init_config["strategy_type"] != "random":
                 raise ValueError(f"{INIT_TOKENIZATION_FAILED}")
             new_seed = int(time.time())
             RETRYING_STRING = f"Retrying with another random seed: {str(new_seed)}"
