@@ -305,7 +305,7 @@ def attack_secalign_model(
     custom_gcg_hyperparameters_1 = {
         "signal_function": gcg.og_gcg_signal,
         "true_loss_function": attack_utility.target_logprobs,
-        "max_steps": 3,
+        "max_steps": 500,
         "topk": 256,
         "forward_eval_candidates": 512,
         "substitution_validity_function": secalign_filter
@@ -350,7 +350,7 @@ def attack_secalign_model(
                             "attention_mask_strategy": "payload_only"
                         }
                     },
-                    "max_steps": 2,
+                    "max_steps": 350,
                     "topk": 256,
                     "forward_eval_candidates": 512,
                     "substitution_validity_function": secalign_filter,
@@ -361,7 +361,7 @@ def attack_secalign_model(
                 "attack_hyperparameters": {
                     "signal_function": gcg.og_gcg_signal,
                     "true_loss_function": attack_utility.target_logprobs,
-                    "max_steps": 1,
+                    "max_steps": 150,
                     "topk": 256,
                     "forward_eval_candidates": 512,
                     "substitution_validity_function": secalign_filter
