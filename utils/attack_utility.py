@@ -3,6 +3,8 @@ import torch
 import typing
 import random
 import gc
+import time
+import copy
 import utils.experiment_logger as experiment_logger
 
 def invertibility_filter(token_ids, **kwargs):
@@ -730,3 +732,37 @@ def default_best_choice_function(model, tokenizer, input_tokenized_data, best_to
         "tokens": best_tokens_sequences[best_index],
         "masks": masks_data
     }
+
+
+def generate_valid_input_tokenized_data(
+    tokenizer,
+    input_template,
+    target_output_str,
+    init_config,
+    logger: experiment_logger.ExperimentLogger,
+    *,
+    max_attempts = 100
+):
+    new_init_config = copy.deepcopy(init_config)
+    num_init_tries = 0
+    while num_init_tries < 100:
+        try:
+            adv_prefix_init, adv_suffix_init = initialize_adversarial_strings(tokenizer, new_init_config)
+            if isinstance(input_template, str):
+                input_tokenized_data = string_masks(tokenizer, input_template, adv_prefix_init, adv_suffix_init, target_output_str)
+            elif isinstance(input_template, list):
+                input_tokenized_data = conversation_masks(tokenizer, input_template, adv_prefix_init, adv_suffix_init, target_output_str)
+        except Exception as e:
+            INIT_TOKENIZATION_FAILED = f"The given initialization failed due to the following reasons - {str(e)}"
+            logger.log(INIT_TOKENIZATION_FAILED)
+            if new_init_config["strategy"] != "random":
+                raise ValueError(f"{INIT_TOKENIZATION_FAILED}")
+            new_seed = int(time.time())
+            RETRYING_STRING = f"Retrying with another random seed: {str(new_seed)}"
+            new_init_config["seed"] = new_seed
+            logger.log(RETRYING_STRING)
+        else:
+            break
+        num_init_tries += 1
+    logger.log(new_init_config, num_init_tries=num_init_tries)
+    return input_tokenized_data, new_init_config

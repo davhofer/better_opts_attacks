@@ -299,16 +299,19 @@ def attack_secalign_model(
         }
     }
 
+    input_tokenized_data, true_init_config = attack_utility.generate_valid_input_tokenized_data(tokenizer, input_conv, target, initial_config, logger)
+    logger.log(true_init_config)
+
     custom_gcg_hyperparameters_1 = {
         "signal_function": gcg.og_gcg_signal,
         "true_loss_function": attack_utility.target_logprobs,
-        "max_steps": 400,
+        "max_steps": 500,
         "topk": 256,
         "forward_eval_candidates": 512,
         "substitution_validity_function": secalign_filter
     }
     adversarial_parameters_dict_1 = {
-        "init_config": initial_config,
+        "input_tokenized_data": input_tokenized_data,
         "attack_algorithm": "custom_gcg",
         "attack_hyperparameters": custom_gcg_hyperparameters_1,
         "early_stop": False,
@@ -352,7 +355,7 @@ def attack_secalign_model(
     #     "substitution_validity_function": secalign_filter,
     # }
     adversarial_parameters_dict_2 = {
-        "init_config": initial_config,
+        "input_tokenized_data": input_tokenized_data,
         "attack_algorithm": "sequential",
         "attack_hyperparameters": [
             {
@@ -378,7 +381,7 @@ def attack_secalign_model(
                             "attention_mask_strategy": "payload_only"
                         }
                     },
-                    "max_steps": 300,
+                    "max_steps": 350,
                     "topk": 256,
                     "forward_eval_candidates": 512,
                     "substitution_validity_function": secalign_filter,
@@ -419,7 +422,7 @@ def attack_secalign_model(
                 "attack_hyperparameters": {
                     "signal_function": gcg.og_gcg_signal,
                     "true_loss_function": attack_utility.target_logprobs,
-                    "max_steps": 100,
+                    "max_steps": 150,
                     "topk": 256,
                     "forward_eval_candidates": 512,
                     "substitution_validity_function": secalign_filter
