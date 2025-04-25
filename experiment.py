@@ -305,7 +305,7 @@ def attack_secalign_model(
     custom_gcg_hyperparameters_1 = {
         "signal_function": gcg.og_gcg_signal,
         "true_loss_function": attack_utility.target_logprobs,
-        "max_steps": 10,
+        "max_steps": 3,
         "topk": 256,
         "forward_eval_candidates": 512,
         "substitution_validity_function": secalign_filter
@@ -350,7 +350,7 @@ def attack_secalign_model(
                             "attention_mask_strategy": "payload_only"
                         }
                     },
-                    "max_steps": 7,
+                    "max_steps": 2,
                     "topk": 256,
                     "forward_eval_candidates": 512,
                     "substitution_validity_function": secalign_filter,
@@ -361,7 +361,7 @@ def attack_secalign_model(
                 "attack_hyperparameters": {
                     "signal_function": gcg.og_gcg_signal,
                     "true_loss_function": attack_utility.target_logprobs,
-                    "max_steps": 3,
+                    "max_steps": 1,
                     "topk": 256,
                     "forward_eval_candidates": 512,
                     "substitution_validity_function": secalign_filter
@@ -448,9 +448,10 @@ if __name__ == "__main__":
         for x in alpacaeval
     ]
 
-    do_mp = False
+    do_mp = True
     if do_mp:
         EXPT_FOLDER_PREFIX = "logs/serious_attack_5"
+        os.makedirs(EXPT_FOLDER_PREFIX, exist_ok=True)
         gpu_ids = list(range(torch.cuda.device_count()))
         NUM_EXPERIMENTS_ON_GPU = len(alpacaeval_convs_raw) // len(gpu_ids)
         alpacaeval_batched = [alpacaeval_convs_raw[(NUM_EXPERIMENTS_ON_GPU) * x: (NUM_EXPERIMENTS_ON_GPU)* (x + 1)] for x in gpu_ids]

@@ -745,7 +745,7 @@ def generate_valid_input_tokenized_data(
 ):
     new_init_config = copy.deepcopy(init_config)
     num_init_tries = 0
-    while num_init_tries < 100:
+    while num_init_tries < max_attempts:
         try:
             adv_prefix_init, adv_suffix_init = initialize_adversarial_strings(tokenizer, new_init_config)
             if isinstance(input_template, str):
@@ -764,5 +764,6 @@ def generate_valid_input_tokenized_data(
         else:
             break
         num_init_tries += 1
+            
     logger.log(new_init_config, num_init_tries=num_init_tries)
     return input_tokenized_data, new_init_config
