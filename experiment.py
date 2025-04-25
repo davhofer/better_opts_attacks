@@ -323,37 +323,6 @@ def attack_secalign_model(
     logger.log(loss_sequences_control)
     logger.log(best_output_sequences_control)
 
-    # if isinstance(model, peft.PeftModel):
-    #     layers_obj = model.base_model.model.model.layers
-    # elif isinstance(model, transformers.LlamaForCausalLM):
-    #     layers_obj = model.model.layers
-
-    # custom_gcg_hyperparameters_2 = {
-    #     "signal_function": losses_experimental.attention_metricized_signal_v2,
-    #     "signal_kwargs": {
-    #         "prob_dist_metric": losses_experimental.kl_divergence_payload_only,
-    #         "layer_weight_strategy": "uniform",
-    #         "attention_mask_strategy": "payload_only",
-    #         "ideal_attentions": secalign_ideal_attention_v1,
-    #         "ideal_attentions_kwargs": {
-    #             "attention_mask_strategy": "payload_only"
-    #         }
-    #     },
-    #     "true_loss_function": losses_experimental.attention_metricized_v2_true_loss,
-    #     "true_loss_kwargs": {
-    #         "prob_dist_metric": losses_experimental.kl_divergence_payload_only,
-    #         "layer_weight_strategy": "uniform",
-    #         "attention_mask_strategy": "payload_only",
-    #         "ideal_attentions": secalign_ideal_attention_v1,
-    #         "ideal_attentions_kwargs": {
-    #             "attention_mask_strategy": "payload_only"
-    #         }
-    #     },
-    #     "max_steps": 300,
-    #     "topk": 256,
-    #     "forward_eval_candidates": 128,
-    #     "substitution_validity_function": secalign_filter,
-    # }
     adversarial_parameters_dict_2 = {
         "input_tokenized_data": input_tokenized_data,
         "attack_algorithm": "sequential",
@@ -387,36 +356,6 @@ def attack_secalign_model(
                     "substitution_validity_function": secalign_filter,
                 }
             },
-
-            # {
-            #     "attack_algorithm": "custom_gcg",
-            #     "attack_hyperparameters": {
-            #         "signal_function": losses_experimental.attention_metricized_signal_v2,
-            #         "signal_kwargs": {
-            #             "prob_dist_metric": losses_experimental.kl_divergence_payload_only,
-            #             "layer_weight_strategy": "uniform",
-            #             "attention_mask_strategy": "payload_only",
-            #             "ideal_attentions": secalign_ideal_attention_v1,
-            #             "ideal_attentions_kwargs": {
-            #                 "attention_mask_strategy": "payload_only"
-            #             }
-            #         },
-            #         "true_loss_function": losses_experimental.attention_metricized_v2_true_loss,
-            #         "true_loss_kwargs": {
-            #             "prob_dist_metric": losses_experimental.kl_divergence_payload_only,
-            #             "layer_weight_strategy": "uniform",
-            #             "attention_mask_strategy": "payload_only",
-            #             "ideal_attentions": secalign_ideal_attention_v1,
-            #             "ideal_attentions_kwargs": {
-            #                 "attention_mask_strategy": "payload_only"
-            #             }
-            #         },
-            #         "max_steps": 200,
-            #         "topk": 256,
-            #         "forward_eval_candidates": 512,
-            #         "substitution_validity_function": secalign_filter,
-            #     }
-            # },
             {
                 "attack_algorithm": "custom_gcg",
                 "attack_hyperparameters": {
