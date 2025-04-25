@@ -307,7 +307,7 @@ def attention_metricized_signal_v2(
     true_attentions = torch.stack([attention[:, :, target_mask - 1, :] for attention in model_output.attentions])
     loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions, true_attentions, layer_weight_strategy=layer_weight_strategy)
     loss_tensor.backward()
-    grad_optims = (one_hot_tensor.grad[optim_mask, :])
+    grad_optims = - (one_hot_tensor.grad[optim_mask, :])
     best_tokens_indices = grad_optims.topk(topk, dim=-1).indices
     return best_tokens_indices    
 
