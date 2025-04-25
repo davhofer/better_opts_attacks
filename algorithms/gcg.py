@@ -99,7 +99,6 @@ def og_gcg_signal(
     logger: experiment_logger.ExperimentLogger,
     *,
     step_num,
-    log_gradients = True,
     **kwargs
 ):
     optim_mask: torch.tensor = masks_data["optim_mask"]
@@ -113,8 +112,6 @@ def og_gcg_signal(
     loss_tensor = GCG_LOSS_FUNCTION(logits[0, target_mask - 1, :], input_points[target_mask].to(logits.device)).sum()
     loss_tensor.backward()
     grad_optims = - (one_hot_tensor.grad[optim_mask, :])
-    if log_gradients:
-        logger.log(grad_optims, step_num=step_num)
     best_tokens_indices = grad_optims.topk(gcg_topk, dim=-1).indices
     return best_tokens_indices
 
