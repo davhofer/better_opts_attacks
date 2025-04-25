@@ -138,8 +138,6 @@ def process_batch_attentions(
 
         return batch_final
         
-
-@experiment_logger.log_parameters(exclude=["model", "tokenizer"])
 def attention_weight_signal_v1(
     model: transformers.AutoModelForCausalLM,
     tokenizer: transformers.AutoTokenizer,
@@ -305,7 +303,7 @@ def attention_metricized_signal_v2(
     inputs_embeds = torch.unsqueeze(one_hot_tensor.to(embedding_tensor.device) @ embedding_tensor, 0)
     model_output = model(inputs_embeds=inputs_embeds, output_attentions=True, return_dict=True)
     true_attentions = torch.stack([attention[:, :, target_mask - 1, :] for attention in model_output.attentions])
-    loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions, true_attentions, layer_weight_strategy=layer_weight_strategy)
+    loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions, true_attentions, logger=logger, layer_weight_strategy=layer_weight_strategy)
     loss_tensor.backward()
     grad_optims = - (one_hot_tensor.grad[optim_mask, :])
     best_tokens_indices = grad_optims.topk(topk, dim=-1).indices
@@ -333,10 +331,11 @@ def attention_metricized_v2_true_loss(
     num_processed = 0
     for batch_logits, batch_true_attentions in attack_utility.bulk_forward_iter(model, input_points):
         true_attentions = torch.stack([attention[:, :, target_mask - 1, :] for attention in batch_true_attentions])
-        loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions[:, num_processed:num_processed + true_attentions.shape[1], ...], true_attentions, layer_weight_strategy=layer_weight_strategy[:, num_processed:num_processed + true_attentions.shape[1], ...])
+        loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions[:, num_processed:num_processed + true_attentions.shape[1], ...], true_attentions, logger=logger, layer_weight_strategy=layer_weight_strategy[:, num_processed:num_processed + true_attentions.shape[1], ...])
         num_processed += true_attentions.shape[1]
         loss_tensors_list.append(loss_tensor)
-        loss_tensor = torch.cat(loss_tensors_list)
+    
+    loss_tensor = torch.cat(loss_tensors_list)
     return loss_tensor
 
 
@@ -347,6 +346,7 @@ def kl_divergence_payload_only(
     masks_data,
     ideal_attentions,
     true_attentions,
+    logger,
     *,
     layer_weight_strategy
 ):
@@ -394,6 +394,7 @@ def pointwise_sum_of_differences_payload_only(
     masks_data,
     ideal_attentions,
     true_attentions,
+    logger: experiment_logger.ExperimentLogger,
     *,
     layer_weight_strategy
 ):
@@ -402,7 +403,6 @@ def pointwise_sum_of_differences_payload_only(
     payload_mask = masks_data["payload_mask"]
     true_attentions = true_attentions[:, :, :, :, payload_mask]
     ideal_attentions = ideal_attentions[:, :, :, :, payload_mask]
-
     divvied_up_losses = ideal_attentions.to(true_attentions.device) - true_attentions
     batch_first_att_strategy = torch.transpose(layer_weight_strategy, 1, 0)
     batch_first_losses = torch.nansum(torch.transpose(divvied_up_losses, 1, 0), dim=-1)
