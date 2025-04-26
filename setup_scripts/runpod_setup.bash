@@ -19,7 +19,7 @@ source ${VENV_PATH}/bin/activate
 # Install required packages
 pip3 install transformers accelerate peft pandas python-dotenv
 pip3 install -U "huggingface_hub[cli]" hf_transfer
-pip3 install dill
+pip3 install dill trl
 
 huggingface-cli login --token ${HF_PASSWORD} --add-to-git-credential
 huggingface-cli download meta-llama/Meta-Llama-3-8B-Instruct --local-dir secalign_refactored/secalign_models/meta-llama/Meta-Llama-3-8B-Instruct
