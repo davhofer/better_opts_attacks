@@ -719,9 +719,18 @@ def target_logprobs(
     **kwargs
 ):
     target_mask = masks_data["target_mask"]
+    try:
+        past_key_values = kwargs["past_key_values"]
+        min_static_index = kwargs["min_static_index"]
+    except KeyError:
+        past_key_values = None
+        min_static_index = 0
+
+    input_points_to_send = input_points[:, min_static_index:]
+    
     losses_list = []
-    for logit_piece in bulk_logits_iter(model, input_points, **kwargs):
-        loss_tensor = UNREDUCED_CE_LOSS(torch.transpose(logit_piece[:, target_mask - 1, :], 1, 2), target_tokens.repeat((logit_piece.shape[0], 1)).to(logit_piece.device)).sum(dim=1)
+    for logit_piece in bulk_logits_iter(model, input_points_to_send, past_key_values=past_key_values, **kwargs):
+        loss_tensor = UNREDUCED_CE_LOSS(torch.transpose(logit_piece[:, -(len(target_mask) + 1):- 1, :], 1, 2), target_tokens.repeat((logit_piece.shape[0], 1)).to(logit_piece.device)).sum(dim=1)
         losses_list.append(loss_tensor)
     loss_tensor = torch.cat(losses_list)
     return loss_tensor
