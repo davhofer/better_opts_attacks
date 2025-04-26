@@ -200,6 +200,16 @@ def custom_gcg(
         logger.log(generated_output_string, step_num=-1)
 
     step_num = 0
+
+    best_tokens_chunk = []
+    true_losses_chunk = []
+    substitution_data_chunk = []
+    current_best_true_loss_chunk = []
+    current_best_tokens_chunk = []
+    logprobs_chunk = []
+    generated_output_string_chunk = []
+    
+    
     for step_num in range(custom_gcg_hyperparams["max_steps"]):
         
         best_tokens_indices = signal_function(model, tokenizer, current_best_tokens, masks_data, custom_gcg_hyperparams["topk"], logger, step_num=step_num, **(signal_kwargs or {}))
@@ -241,24 +251,22 @@ def custom_gcg(
         del best_tokens_indices
         gc.collect()
         torch.cuda.empty_cache()
-        previous_best_tokens = current_best_tokens
-        logger.log(previous_best_tokens, step_num=step_num)
-        logger.log(substitution_data, step_num=step_num)
+        substitution_data_chunk.append(substitution_data)
         true_losses = true_loss_function(model, tokenizer, substitution_data, masks_data, input_tokens[target_mask], logger, **(true_loss_kwargs or {}))
-        logger.log(true_losses, step_num=step_num)
+        true_losses_chunk.append(true_losses)
         current_best_true_loss = true_losses[torch.argmin(true_losses)]
-        logger.log(current_best_true_loss, step_num=step_num)
+        current_best_true_loss_chunk.append(current_best_true_loss)
         current_best_tokens = substitution_data[torch.argmin(true_losses)].clone()
-        logger.log(current_best_tokens, step_num=step_num)
+        current_best_tokens_chunk.append(current_best_tokens)
         best_output_sequences.append(current_best_tokens.clone())
         if eval_every_step:
             logprobs = attack_utility.target_logprobs(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger)
             logprobs = logprobs.item()
-            logger.log(logprobs, step_num=step_num)
+            logprobs_chunk.append(logprobs)
             logprobs_sequences.append(logprobs)
             generated_output_tokens = model.generate(torch.unsqueeze(current_best_tokens[eval_input_mask], dim=0).to(model.device), attention_mask=torch.unsqueeze(torch.ones(current_best_tokens[eval_input_mask].shape), dim=0).to(model.device), **generation_config)
             generated_output_string = tokenizer.batch_decode(generated_output_tokens[:, eval_input_mask[-1] + 1 :])[0]
-            logger.log(generated_output_string, step_num=step_num)
+            generated_output_string_chunk.append(generated_output_string)
             if early_stop:
                 if generated_output_string == tokenizer.decode(input_tokenized_data["tokens"][target_mask]):
                     successive_correct_outputs += 1
@@ -266,6 +274,23 @@ def custom_gcg(
                         break
                 else:
                     successive_correct_outputs = 0
+    
+        if (step_num + 1) % 20 == 0:
+            logger.log(substitution_data_chunk, step_num=step_num)
+            logger.log(true_losses_chunk, step_num=step_num)
+            logger.log(current_best_true_loss_chunk, step_num=step_num)
+            logger.log(current_best_tokens_chunk, step_num=step_num)
+            logger.log(best_tokens_chunk, step_num=step_num)
+            logger.log(logprobs_chunk, step_num=step_num)
+            logger.log(generated_output_string_chunk, step_num=step_num)
+
+            substitution_data_chunk = []
+            true_losses_chunk = []
+            current_best_true_loss_chunk = []
+            current_best_tokens_chunk = []
+            best_tokens_chunk = []
+            logprobs_chunk = []
+            generated_output_string_chunk = []
 
     logger.log(successive_correct_outputs, num_steps=step_num)
     return logprobs_sequences, best_output_sequences
