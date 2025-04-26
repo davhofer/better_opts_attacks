@@ -559,6 +559,7 @@ def bulk_logits_iter(
                 logits = model(
                     input_ids=data_piece.to(model.device), 
                     past_key_values=current_past_kv,
+                    use_cache = True if current_past_kv is not None else False
                     **kwargs
                 ).logits
                 
@@ -668,10 +669,12 @@ def bulk_forward_iter(
     model: transformers.AutoModelForCausalLM,
     data: torch.tensor,
     batch_size=BULK_ATT_FORWARD_DEFAULT_SIZE,
-    generation_params=DEFAULT_GENERATION_PARAMS
+    generation_params=DEFAULT_GENERATION_PARAMS,
+    past_key_values=None  # Add this parameter
 ) -> typing.Iterator[typing.Tuple[torch.Tensor, typing.Tuple[torch.Tensor, ...]]]:
     """
     Iterator that yields both logits and attentions one batch at a time.
+    Now supports past_key_values for prefix caching.
     
     Returns:
         Iterator yielding tuples of (logits, attentions) where:
@@ -680,11 +683,24 @@ def bulk_forward_iter(
     """
     with torch.no_grad():
         for i in range(0, len(data), batch_size):
+            current_batch_size = min(batch_size, len(data) - i)
             data_piece = data[i:i + batch_size]
+            
+            # If past_key_values is provided, expand it to match the current batch size
+            current_past_kv = None
+            if past_key_values is not None:
+                current_past_kv = tuple(
+                    (layer[0].expand(current_batch_size, -1, -1, -1),
+                     layer[1].expand(current_batch_size, -1, -1, -1))
+                    for layer in past_key_values
+                )
+            
             try:
                 output = model(
                     input_ids=data_piece.to(model.device),
-                    output_attentions=True
+                    output_attentions=True,
+                    past_key_values=current_past_kv,  # Add this parameter
+                    use_cache=True if current_past_kv is not None else False  # Add this parameter
                 )
                 yield output.logits, output.attentions
                 
@@ -696,7 +712,8 @@ def bulk_forward_iter(
                     model, 
                     data_piece, 
                     batch_size // 2, 
-                    generation_params
+                    generation_params,
+                    past_key_values=past_key_values  # Pass the original past_key_values
                 )
                 for sub_logits, sub_attentions in sub_iterator:
                     yield sub_logits, sub_attentions
@@ -707,6 +724,7 @@ def bulk_forward_iter(
             # Clean up memory after each batch
             gc.collect()
             torch.cuda.empty_cache()
+
 
 UNREDUCED_CE_LOSS = torch.nn.CrossEntropyLoss(reduction="none")
 def target_logprobs(
