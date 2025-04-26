@@ -722,7 +722,7 @@ def bulk_forward_iter(
                     use_cache=True if current_cache is not None else False  # Add this parameter
                 )
                 if current_cache is not None:
-                    current_cache = trucate_cache(current_cache, min_static_length)
+                    current_cache = truncate_cache(current_cache, min_static_length)
 
                 yield output.logits, output.attentions
                 
@@ -735,7 +735,8 @@ def bulk_forward_iter(
                     data_piece, 
                     batch_size // 2, 
                     generation_params,
-                    past_key_values=past_key_values  # Pass the original past_key_values
+                    past_key_values=past_key_values,
+                    min_static_length=min_static_length # Pass the original past_key_values
                 )
                 for sub_logits, sub_attentions in sub_iterator:
                     yield sub_logits, sub_attentions

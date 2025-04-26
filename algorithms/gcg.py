@@ -220,6 +220,7 @@ def custom_gcg(
             use_cache=True
         )
         cache = outputs.past_key_values
+        cache = attack_utility.truncate_cache(cache, min_static_index)
     else:
         min_static_index = 0
         cache = None

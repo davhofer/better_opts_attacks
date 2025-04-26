@@ -411,8 +411,6 @@ def pointwise_sum_of_differences_payload_only(
     import pdb
     pdb.set_trace()
     assert true_attentions.shape == ideal_attentions.shape
-    import pdb
-    pdb.set_trace()
     payload_mask = masks_data["payload_mask"]
     true_attentions = true_attentions[:, :, :, :, payload_mask]
     ideal_attentions = ideal_attentions[:, :, :, :, payload_mask]

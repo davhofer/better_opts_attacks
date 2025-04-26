@@ -232,7 +232,7 @@ def uniform_ideal_attentions(
     else:
         raise ValueError(f"attention_mask_strategy {attention_mask_strategy} is not implemented yet.")
     if past_key_values is None:
-        dummy_attentions = torch.stack(model(input_ids=torch.unsqueeze(input_points[0], dim=0).to(model.device), output_attentions=True).attentions)
+        dummy_attentions = torch.stack(model(input_ids=torch.unsqueeze(input_points[0], dim=0).to(model.device), output_attentions=True, use_cache=False).attentions)
     else:
         import pdb
         pdb.set_trace()
@@ -338,7 +338,7 @@ def attack_secalign_model(
             {
                 "attack_algorithm": "custom_gcg",
                 "attack_hyperparameters": {
-                    "signal_function": losses_experimental.attention_metricized_signal_v2,
+                    "signal_function": losses_experimental.attention_metricized_signal_c2,
                     "signal_kwargs": {
                         "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
                         "layer_weight_strategy": "uniform",
