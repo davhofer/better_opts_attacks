@@ -392,7 +392,8 @@ def run_secalign_eval_on_single_gpu(expt_folder_prefix: str, self_device_idx, ex
         traceback.print_exc()
     
     for example_num, example_target in enumerate(example_targets):
-        expt_id = f"run_{str(datetime.datetime.now()).replace("-","").replace(" ","").replace(":","").replace(".","")}"
+        now_str = str(datetime.datetime.now()).replace("-", "").replace(" ", "").replace(":", "").replace(".", "")
+        expt_id = f"run_{now_str}"
         logger = experiment_logger.ExperimentLogger(f"{expt_folder}/{expt_id}")
         logger.log(model_name, example_num=example_num)
         example_target = {
@@ -417,7 +418,8 @@ def run_secalign_eval_auto(expt_folder_prefix, example_targets, **kwargs):
         traceback.print_exc()
     
     for example_num, example_target in enumerate(example_targets):
-        expt_id = f"run_{str(datetime.datetime.now()).replace("-","").replace(" ","").replace(":","").replace(".","")}"
+        now_str = str(datetime.datetime.now()).replace("-", "").replace(" ", "").replace(":", "").replace(".", "")
+        expt_id = f"run_{now_str}"
         logger = experiment_logger.ExperimentLogger(f"{expt_folder}/{expt_id}")
         logger.log(model_name, example_num=example_num)
         example_target = {

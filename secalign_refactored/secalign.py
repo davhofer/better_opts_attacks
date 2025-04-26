@@ -2,7 +2,6 @@ from .secalign_raw_code import config as config
 from .secalign_raw_code import test as test
 from .secalign_raw_code import struq as struq
 
-import fastchat.conversation
 from copy import deepcopy
 import torch
 import transformers
@@ -279,7 +278,7 @@ def test_model_output(llm_input, model, tokenizer):
 
 
 @dataclasses.dataclass
-class StruqConversation(fastchat.conversation.Conversation):
+class StruqConversation:
     def get_prompt(self) -> str:
         system_prompt = self.system_template.format(system_message=self.system_message)
         seps = [self.sep, self.sep2]
