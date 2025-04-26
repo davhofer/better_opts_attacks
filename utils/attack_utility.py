@@ -532,17 +532,36 @@ def bulk_logits_iter(
     model: transformers.AutoModelForCausalLM,
     data: torch.tensor,
     batch_size=BULK_FORWARD_DEFAULT_BSZ,
-    generation_params=DEFAULT_GENERATION_PARAMS
+    generation_params=DEFAULT_GENERATION_PARAMS,
+    past_key_values=None,  # Add this parameter
+    **kwargs
 ):
     """
     Iterator version of bulk_logits that yields results one batch at a time
-    to reduce memory usage.
+    to reduce memory usage. Now supports past_key_values for prefix caching.
     """
     with torch.no_grad():
         for i in range(0, len(data), batch_size):
+            current_batch_size = min(batch_size, len(data) - i)
             data_piece = data[i:i + batch_size]
+            
+            # If past_key_values is provided, expand it to match the current batch size
+            current_past_kv = None
+            if past_key_values is not None:
+                current_past_kv = tuple(
+                    (layer[0].expand(current_batch_size, -1, -1, -1),
+                     layer[1].expand(current_batch_size, -1, -1, -1))
+                    for layer in past_key_values
+                )
+            
             try:
-                logits = model(input_ids=data_piece.to(model.device)).logits
+                # Include past_key_values in the forward pass
+                logits = model(
+                    input_ids=data_piece.to(model.device), 
+                    past_key_values=current_past_kv,
+                    **kwargs
+                ).logits
+                
                 cpu_logits = logits.cpu()
                 del logits
                 gc.collect()
@@ -554,7 +573,9 @@ def bulk_logits_iter(
                     model, 
                     data_piece, 
                     batch_size // 2, 
-                    generation_params
+                    generation_params,
+                    past_key_values=past_key_values,  # Pass the original past_key_values
+                    **kwargs
                 )
                 for sub_result in sub_iterator:
                     yield sub_result
@@ -565,8 +586,8 @@ def bulk_logits_iter(
             # Clean up memory after each batch
             gc.collect()
             torch.cuda.empty_cache()
-
             torch.cuda.synchronize()
+
 
 def bulk_logits_from_embeds(
     model: transformers.AutoModelForCausalLM,
@@ -695,10 +716,11 @@ def target_logprobs(
     masks_data: typing.Dict[str, torch.tensor],
     target_tokens: torch.tensor,
     logger: experiment_logger.ExperimentLogger = None,
+    **kwargs
 ):
     target_mask = masks_data["target_mask"]
     losses_list = []
-    for logit_piece in bulk_logits_iter(model, input_points):
+    for logit_piece in bulk_logits_iter(model, input_points, **kwargs):
         loss_tensor = UNREDUCED_CE_LOSS(torch.transpose(logit_piece[:, target_mask - 1, :], 1, 2), target_tokens.repeat((logit_piece.shape[0], 1)).to(logit_piece.device)).sum(dim=1)
         losses_list.append(loss_tensor)
     loss_tensor = torch.cat(losses_list)
