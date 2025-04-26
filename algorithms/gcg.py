@@ -208,7 +208,10 @@ def custom_gcg(
     current_best_tokens_chunk = []
     logprobs_chunk = []
     generated_output_string_chunk = []
-    
+
+    min_static_index = min(optim_mask) - 1
+    most_common_input_tokens = input_tokens[:min_static_index]
+    common_key_value_caches = model(input_ids=torch.unsqueeze(most_common_input_tokens, dim=0).to(model.device), use_cache=True).past_key_values
     
     for step_num in range(custom_gcg_hyperparams["max_steps"]):
         
@@ -252,6 +255,12 @@ def custom_gcg(
         gc.collect()
         torch.cuda.empty_cache()
         substitution_data_chunk.append(substitution_data)
+
+        if true_loss_kwargs is None:
+            true_loss_kwargs = {}
+        true_loss_kwargs["past_key_values"] = common_key_value_caches
+        true_loss_kwargs["min_static_index"] = min_static_index
+        
         true_losses = true_loss_function(model, tokenizer, substitution_data, masks_data, input_tokens[target_mask], logger, **(true_loss_kwargs or {}))
         true_losses_chunk.append(true_losses)
         current_best_true_loss = true_losses[torch.argmin(true_losses)]
