@@ -534,33 +534,34 @@ def bulk_logits_iter(
     batch_size=BULK_FORWARD_DEFAULT_BSZ,
     generation_params=DEFAULT_GENERATION_PARAMS,
     past_key_values=None,  # Add this parameter
-    **kwargs
 ):
     """
     Iterator version of bulk_logits that yields results one batch at a time
     to reduce memory usage. Now supports past_key_values for prefix caching.
     """
+    import pdb
     with torch.no_grad():
+        current_cache = None
         for i in range(0, len(data), batch_size):
             current_batch_size = min(batch_size, len(data) - i)
             data_piece = data[i:i + batch_size]
             
             # If past_key_values is provided, expand it to match the current batch size
-            current_past_kv = None
-            if past_key_values is not None:
-                current_past_kv = tuple(
-                    (layer[0].expand(current_batch_size, -1, -1, -1),
-                     layer[1].expand(current_batch_size, -1, -1, -1))
-                    for layer in past_key_values
-                )
+            pdb.set_trace()
+            if current_cache is None and past_key_values is not None:
+                expanded = []
+                for idx, (k, v) in enumerate(past_key_values):
+                    k_exp = k.expand(batch_size, -1, -1, -1)
+                    v_exp = v.expand(batch_size, -1, -1, -1)
+                    expanded.append((k_exp, v_exp))
+                current_cache = transformers.DynamicCache.from_legacy_cache(expanded)
             
             try:
                 # Include past_key_values in the forward pass
                 logits = model(
                     input_ids=data_piece.to(model.device), 
-                    past_key_values=current_past_kv,
-                    use_cache = True if current_past_kv is not None else False
-                    **kwargs
+                    past_key_values=current_cache,
+                    use_cache = True if current_cache is not None else False
                 ).logits
                 
                 cpu_logits = logits.cpu()
@@ -570,13 +571,17 @@ def bulk_logits_iter(
                 yield cpu_logits
             except torch.cuda.OutOfMemoryError:
                 # If OOM occurs, recursively process with smaller batch size
+                
+                del expanded
+                del current_cache
+                gc.collect()
+                torch.cuda.empty_cache()
                 sub_iterator = bulk_logits_iter(
                     model, 
                     data_piece, 
                     batch_size // 2, 
                     generation_params,
-                    past_key_values=past_key_values,  # Pass the original past_key_values
-                    **kwargs
+                    past_key_values=past_key_values  # Pass the original past_key_values
                 )
                 for sub_result in sub_iterator:
                     yield sub_result
@@ -747,7 +752,7 @@ def target_logprobs(
     input_points_to_send = input_points[:, min_static_index:]
     
     losses_list = []
-    for logit_piece in bulk_logits_iter(model, input_points_to_send, past_key_values=past_key_values, **kwargs):
+    for logit_piece in bulk_logits_iter(model, input_points_to_send, past_key_values=past_key_values):
         loss_tensor = UNREDUCED_CE_LOSS(torch.transpose(logit_piece[:, -(len(target_mask) + 1):- 1, :], 1, 2), target_tokens.repeat((logit_piece.shape[0], 1)).to(logit_piece.device)).sum(dim=1)
         losses_list.append(loss_tensor)
     loss_tensor = torch.cat(losses_list)

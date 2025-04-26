@@ -188,7 +188,7 @@ def custom_gcg(
     successive_correct_outputs = 0
 
     if eval_initial:
-        initial_true_loss = true_loss_function(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger, **(true_loss_kwargs or {}))
+        initial_true_loss = true_loss_function(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger)
         logger.log(initial_true_loss, step_num=-1)
         best_output_sequences.append(current_best_tokens.clone())
         logger.log(current_best_tokens, step_num=-1)
@@ -211,12 +211,18 @@ def custom_gcg(
     generated_output_string_chunk = []
 
     if use_kv_caching:
+        import pdb
+        pdb.set_trace()
         min_static_index = min(optim_mask) - 1
         most_common_input_tokens = input_tokens[:min_static_index]
-        common_key_value_caches = model(input_ids=torch.unsqueeze(most_common_input_tokens, dim=0).to(model.device), use_cache=True).past_key_values
+        outputs = model(
+            input_ids=torch.unsqueeze(most_common_input_tokens, dim=0).to(model.device),
+            use_cache=True
+        )
+        cache = outputs.past_key_values
     else:
         min_static_index = 0
-        common_key_value_caches = None
+        cache = None
     
     for step_num in range(custom_gcg_hyperparams["max_steps"]):
         
@@ -263,10 +269,10 @@ def custom_gcg(
 
         if true_loss_kwargs is None:
             true_loss_kwargs = {}
-        true_loss_kwargs["past_key_values"] = common_key_value_caches
+        true_loss_kwargs["past_key_values"] = cache
         true_loss_kwargs["min_static_index"] = min_static_index
         
-        true_losses = true_loss_function(model, tokenizer, substitution_data, masks_data, input_tokens[target_mask], logger, **(true_loss_kwargs or {}))
+        true_losses = true_loss_function(model, tokenizer, substitution_data, masks_data, input_tokens[target_mask], logger, **true_loss_kwargs)
         true_losses_chunk.append(true_losses)
         current_best_true_loss = true_losses[torch.argmin(true_losses)]
         current_best_true_loss_chunk.append(current_best_true_loss)
@@ -289,7 +295,7 @@ def custom_gcg(
                 else:
                     successive_correct_outputs = 0
     
-        if (step_num + 1) % 20 == 0:
+        if (step_num + 1) % 1 == 0:
             logger.log(substitution_data_chunk, step_num=step_num)
             logger.log(true_losses_chunk, step_num=step_num)
             logger.log(current_best_true_loss_chunk, step_num=step_num)
