@@ -149,7 +149,7 @@ def recursive_filter(s):
 
 def load_model_and_tokenizer(model_path, tokenizer_path=None, load_model=True, **kwargs):
     if load_model:
-        model = transformers.AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True, **kwargs)
+        model = transformers.AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True, torch_dtype=torch.float16, **kwargs)
     else:
         model = None
     tokenizer_path = model_path if tokenizer_path is None else tokenizer_path

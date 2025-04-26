@@ -177,7 +177,8 @@ def secalign_ideal_attention_v1(
     input_points,
     masks_data,
     *,
-    attention_mask_strategy
+    attention_mask_strategy,
+    **kwargs
 ):
     if input_points.dim() == 1:
         input_points = torch.unsqueeze(input_points, dim=0)
@@ -215,7 +216,9 @@ def uniform_ideal_attentions(
     input_points,
     masks_data,
     *,
-    attention_mask_strategy
+    attention_mask_strategy,
+    past_key_values=None,
+    min_static_index=None
 ):
     if input_points.dim() == 1:
         input_points = torch.unsqueeze(input_points, dim=0)
@@ -228,12 +231,17 @@ def uniform_ideal_attentions(
         attention_mask = torch.cat((payload_mask, control_mask))
     else:
         raise ValueError(f"attention_mask_strategy {attention_mask_strategy} is not implemented yet.")
-    dummy_attentions = torch.stack(model(input_ids=torch.unsqueeze(input_points[0], dim=0).to(model.device), output_attentions=True).attentions)
+    if past_key_values is None:
+        dummy_attentions = torch.stack(model(input_ids=torch.unsqueeze(input_points[0], dim=0).to(model.device), output_attentions=True).attentions)
+    else:
+        import pdb
+        pdb.set_trace()
+        dummy_attentions = torch.stack(model(input_ids=torch.unsqueeze(input_points[0], dim=0).to(model.device), past_key_values=past_key_values, use_cache=True, output_attentions=True).attentions)
     ideal_shape = dummy_attentions.shape
     ideal_shape = (ideal_shape[0], input_points.shape[0], ideal_shape[2], ideal_shape[3], ideal_shape[4])
     attentions = torch.zeros(ideal_shape)
     attentions[:, :, :, :, attention_mask] = 1 / len(attention_mask)
-    return attentions[:, :, :, target_mask - 1, :]
+    return attentions[:, :, :, -(len(target_mask) + 1):-1, :]
 
 @experiment_logger.log_parameters(exclude=["model", "tokenizer"])
 def attack_secalign_model(
@@ -305,7 +313,7 @@ def attack_secalign_model(
     custom_gcg_hyperparameters_1 = {
         "signal_function": gcg.og_gcg_signal,
         "true_loss_function": attack_utility.target_logprobs,
-        "max_steps": 5,
+        "max_steps": 1,
         "topk": 256,
         "forward_eval_candidates": 512,
         "substitution_validity_function": secalign_filter
@@ -350,7 +358,7 @@ def attack_secalign_model(
                             "attention_mask_strategy": "payload_only"
                         }
                     },
-                    "max_steps": 5,
+                    "max_steps": 100,
                     "topk": 256,
                     "forward_eval_candidates": 512,
                     "substitution_validity_function": secalign_filter,
@@ -361,7 +369,7 @@ def attack_secalign_model(
                 "attack_hyperparameters": {
                     "signal_function": gcg.og_gcg_signal,
                     "true_loss_function": attack_utility.target_logprobs,
-                    "max_steps": 5,
+                    "max_steps": 300,
                     "topk": 256,
                     "forward_eval_candidates": 512,
                     "substitution_validity_function": secalign_filter

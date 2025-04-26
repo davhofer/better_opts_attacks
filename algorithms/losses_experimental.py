@@ -323,9 +323,6 @@ def attention_metricized_v2_true_loss(
     **kwargs
 ):
     ideal_attention_kwargs = kwargs.get("ideal_attentions_kwargs", {})
-    ideal_attentions = smart_ideal_attentions(model, tokenizer, ideal_attentions, input_points, masks_data, **ideal_attention_kwargs)
-    layer_weight_strategy = smart_layer_weight_strategy(model, tokenizer, layer_weight_strategy, ideal_attentions, input_points, masks_data)
-
     try:
         past_key_values = kwargs["past_key_values"]
         min_static_index = kwargs["min_static_index"]
@@ -333,11 +330,16 @@ def attention_metricized_v2_true_loss(
         past_key_values = None
         min_static_index = 0
     input_points_to_send = input_points[:, min_static_index:]
-    
+    ideal_attention_kwargs["past_key_values"] = past_key_values
+    ideal_attention_kwargs["min_static_index"] = min_static_index
+
+    ideal_attentions = smart_ideal_attentions(model, tokenizer, ideal_attentions, input_points_to_send, masks_data, **ideal_attention_kwargs)
+    layer_weight_strategy = smart_layer_weight_strategy(model, tokenizer, layer_weight_strategy, ideal_attentions, input_points, masks_data)
+
     target_mask: torch.tensor = masks_data["target_mask"]
     loss_tensors_list = []
     num_processed = 0
-    for batch_logits, batch_true_attentions in attack_utility.bulk_forward_iter(model, input_points_to_send, past_key_values=past_key_values):
+    for batch_logits, batch_true_attentions in attack_utility.bulk_forward_iter(model, input_points_to_send, past_key_values=past_key_values, min_static_length=min_static_index):
         true_attentions = torch.stack([attention[:, :, -(len(target_mask) + 1):- 1, :] for attention in batch_true_attentions])
         loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions[:, num_processed:num_processed + true_attentions.shape[1], ...], true_attentions, logger=logger, layer_weight_strategy=layer_weight_strategy[:, num_processed:num_processed + true_attentions.shape[1], ...])
         num_processed += true_attentions.shape[1]
@@ -406,8 +408,11 @@ def pointwise_sum_of_differences_payload_only(
     *,
     layer_weight_strategy
 ):
+    import pdb
+    pdb.set_trace()
     assert true_attentions.shape == ideal_attentions.shape
-
+    import pdb
+    pdb.set_trace()
     payload_mask = masks_data["payload_mask"]
     true_attentions = true_attentions[:, :, :, :, payload_mask]
     ideal_attentions = ideal_attentions[:, :, :, :, payload_mask]

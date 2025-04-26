@@ -188,7 +188,7 @@ def custom_gcg(
     successive_correct_outputs = 0
 
     if eval_initial:
-        initial_true_loss = true_loss_function(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger)
+        initial_true_loss = true_loss_function(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger, **(true_loss_kwargs or {}))
         logger.log(initial_true_loss, step_num=-1)
         best_output_sequences.append(current_best_tokens.clone())
         logger.log(current_best_tokens, step_num=-1)
