@@ -164,7 +164,8 @@ def custom_gcg(
     early_stop,
     eval_initial,
     identical_outputs_before_stop,
-    generation_config
+    generation_config,
+    use_kv_caching = True
 ):
 
     logger.log(input_tokenized_data)
@@ -209,9 +210,13 @@ def custom_gcg(
     logprobs_chunk = []
     generated_output_string_chunk = []
 
-    min_static_index = min(optim_mask) - 1
-    most_common_input_tokens = input_tokens[:min_static_index]
-    common_key_value_caches = model(input_ids=torch.unsqueeze(most_common_input_tokens, dim=0).to(model.device), use_cache=True).past_key_values
+    if use_kv_caching:
+        min_static_index = min(optim_mask) - 1
+        most_common_input_tokens = input_tokens[:min_static_index]
+        common_key_value_caches = model(input_ids=torch.unsqueeze(most_common_input_tokens, dim=0).to(model.device), use_cache=True).past_key_values
+    else:
+        min_static_index = 0
+        common_key_value_caches = None
     
     for step_num in range(custom_gcg_hyperparams["max_steps"]):
         
