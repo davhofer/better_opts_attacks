@@ -508,19 +508,6 @@ DEFAULT_GENERATION_PARAMS = {
     "logprobs": True,
 }
 
-def truncate_cache(dynamic_cache, length):
-    new_keys = []
-    new_vals = []
-
-    for idx, (k, v) in enumerate(dynamic_cache):
-        k_trunc = k[:, :, :length, :]
-        v_trunc = v[:, :, :length, :]
-        new_keys.append(k_trunc)
-        new_vals.append(v_trunc)
-    dynamic_cache.key_cache = new_keys
-    dynamic_cache.value_cache = new_vals
-    return dynamic_cache
-
 def bulk_logits(
     model: transformers.AutoModelForCausalLM,
     data: torch.tensor,
@@ -546,8 +533,7 @@ def bulk_logits_iter(
     data: torch.tensor,
     batch_size=512,
     generation_params=DEFAULT_GENERATION_PARAMS,
-    past_key_values=None, # Add this parameter
-    min_static_length=0
+    resettable_cache=None
 ):
     """
     Iterator version of bulk_logits that yields results one batch at a time
@@ -556,26 +542,17 @@ def bulk_logits_iter(
     with torch.no_grad():
         current_cache = None
         for i in range(0, len(data), batch_size):
-            current_batch_size = min(batch_size, len(data) - i)
             data_piece = data[i:i + batch_size]
-            
-            # If past_key_values is provided, expand it to match the current batch size
-            if current_cache is None and past_key_values is not None:
-                current_cache = transformers.DynamicCache()
-                for idx, (k, v) in enumerate(past_key_values):
-                    k_exp = k.expand(batch_size, -1, -1, -1)
-                    v_exp = v.expand(batch_size, -1, -1, -1)
-                    current_cache.update(k_exp, v_exp, idx)
-                    
             try:
-                # Include past_key_values in the forward pass
+
+                if resettable_cache is not None:
+                    resettable_cache.reset_to_original()
+
                 logits = model(
                     input_ids=data_piece.to(model.device), 
                     past_key_values=current_cache,
                     use_cache = True if current_cache is not None else False
                 ).logits
-                if current_cache is not None:
-                    current_cache = truncate_cache(current_cache, min_static_length)
                 
                 cpu_logits = logits.cpu()
                 del logits
@@ -593,7 +570,8 @@ def bulk_logits_iter(
                     data_piece, 
                     batch_size // 2, 
                     generation_params,
-                    past_key_values=past_key_values  # Pass the original past_key_values
+                    past_key_values=past_key_values,
+                    min_static_index=min_static_index  # Pass the original past_key_values
                 )
                 for sub_result in sub_iterator:
                     yield sub_result
@@ -770,7 +748,7 @@ def target_logprobs(
     input_points_to_send = input_points[:, min_static_index:]
     
     losses_list = []
-    for logit_piece in bulk_logits_iter(model, input_points_to_send, past_key_values=past_key_values, min_static_length=min_static_index):
+    for logit_piece in bulk_logits_iter(model, input_points_to_send, past_key_values=past_key_values, min_static_index=min_static_index):
         loss_tensor = UNREDUCED_CE_LOSS(torch.transpose(logit_piece[:, -(len(target_mask) + 1):- 1, :], 1, 2), target_tokens.repeat((logit_piece.shape[0], 1)).to(logit_piece.device)).sum(dim=1)
         losses_list.append(loss_tensor)
     loss_tensor = torch.cat(losses_list)
@@ -839,3 +817,88 @@ def generate_valid_input_tokenized_data(
             
     logger.log(new_init_config, num_init_tries=num_init_tries)
     return input_tokenized_data, new_init_config
+
+def create_static_cache_for_prefix(
+    model: transformers.AutoModelForCausalLM,
+    prefix_input_ids: torch.tensor,
+    max_cache_len: int = 128
+) -> transformers.StaticCache:
+    """
+    Create a static cache for a given prefix
+    """
+
+    if prefix_input_ids.dim() == 1:
+        prefix_input_ids = torch.unsqueeze(prefix_input_ids, dim=0)
+
+    # Create a StaticCache with predefined max length
+    cache = transformers.StaticCache(
+        config=model.config,
+        max_batch_size=1,  # Adjust based on your needs
+        max_cache_len=max_cache_len,
+        dtype=torch.float16 if model.dtype == torch.float16 else torch.float32
+    )
+    
+    with torch.no_grad():
+        # Run the prefix through the model to populate the cache
+        model(
+            input_ids=prefix_input_ids.to(model.device),
+            past_key_values=cache,
+            use_cache=True
+        )    
+    return cache
+
+def clone_cache_efficiently(cache):
+    """
+    Create an efficient clone of a cache using tensor.clone()
+    """
+        # For newer StaticCache/DynamicCache objects
+    new_cache = type(cache)(
+        config=cache.config,
+        max_batch_size=cache.batch_size,
+        max_cache_len=cache.max_cache_len,
+        dtype=cache.key_cache[0].dtype
+    )
+    new_cache.key_cache = [k.clone() for k in cache.key_cache]
+    new_cache.value_cache = [v.clone() for v in cache.value_cache]
+    return new_cache
+
+
+def expand_cache_for_batch(cache, target_batch_size):
+    """
+    Expand a cache created with batch_size=1 to support a larger batch size.
+    
+    Args:
+        cache: The StaticCache object to expand
+        target_batch_size: The desired batch size
+    
+    Returns:
+        The expanded cache
+    """
+    # Skip if the cache is already the right size
+    if cache.batch_size >= target_batch_size:
+        return cache
+    
+    # Create new tensors with expanded batch dimension
+    for layer_idx in range(len(cache.key_cache)):
+        # Get current dimensions
+        current_shape = cache.key_cache[layer_idx].shape
+        
+        # Create expanded tensors
+        # Shape is typically [batch_size, num_heads, seq_len, head_dim]
+        expanded_key = cache.key_cache[layer_idx].expand(
+            target_batch_size, *current_shape[1:]
+        ).clone()  # Clone to make it writable
+        
+        expanded_value = cache.value_cache[layer_idx].expand(
+            target_batch_size, *current_shape[1:]
+        ).clone()  # Clone to make it writable
+        
+        # Replace the original tensors
+        cache.key_cache[layer_idx] = expanded_key
+        cache.value_cache[layer_idx] = expanded_value
+    
+    # Update the cache's batch size property if it exists
+    if hasattr(cache, 'batch_size'):
+        cache.batch_size = target_batch_size
+    
+    return cache

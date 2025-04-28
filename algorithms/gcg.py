@@ -211,19 +211,12 @@ def custom_gcg(
     generated_output_string_chunk = []
 
     if use_kv_caching:
-        import pdb
-        pdb.set_trace()
         min_static_index = min(optim_mask) - 1
         most_common_input_tokens = input_tokens[:min_static_index]
-        outputs = model(
-            input_ids=torch.unsqueeze(most_common_input_tokens, dim=0).to(model.device),
-            use_cache=True
-        )
-        cache = outputs.past_key_values
-        cache = attack_utility.truncate_cache(cache, min_static_index)
+        static_cache = attack_utility.create_static_cache_for_prefix(model, most_common_input_tokens)
     else:
         min_static_index = 0
-        cache = None
+        static_cache = None
     
     for step_num in range(custom_gcg_hyperparams["max_steps"]):
         
@@ -273,7 +266,7 @@ def custom_gcg(
         true_loss_kwargs["past_key_values"] = cache
         true_loss_kwargs["min_static_index"] = min_static_index
         
-        true_losses = true_loss_function(model, tokenizer, substitution_data, masks_data, input_tokens[target_mask], logger, **true_loss_kwargs)
+        true_losses = true_loss_function(model, tokenizer, substitution_data, masks_data, input_tokens[target_mask], logger, **(true_loss_kwargs or {}))
         true_losses_chunk.append(true_losses)
         current_best_true_loss = true_losses[torch.argmin(true_losses)]
         current_best_true_loss_chunk.append(current_best_true_loss)

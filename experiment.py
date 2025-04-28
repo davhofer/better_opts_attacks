@@ -78,7 +78,7 @@ def attack_purplellama_indirect(
 
     initial_config_1 = {
         "strategy_type": "random",
-        "prefix_length": 0,
+        "prefix_length": 25,
         "suffix_length": 25,
         "seed": int(time.time())
     }
@@ -297,8 +297,8 @@ def attack_secalign_model(
 
     initial_config = {
         "strategy_type": "random",
-        "prefix_length": 25,
-        "suffix_length": 25,
+        "prefix_length": 0,
+        "suffix_length": 20,
         "seed": int(time.time()),
         "prefix_filter": secalign_filter,
         "suffix_filter": secalign_filter,
