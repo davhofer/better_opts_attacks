@@ -554,7 +554,6 @@ def bulk_logits_iter(
                     use_cache = True if current_cache is not None else False
                 ).logits
                 
-                cpu_logits = logits.cpu()
                 del logits
                 gc.collect()
                 torch.cuda.empty_cache()
