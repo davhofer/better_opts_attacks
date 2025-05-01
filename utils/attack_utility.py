@@ -194,10 +194,10 @@ def string_masks(
     target_indices = torch.where(target_mask)[0]
     input_indices = torch.where(input_mask)[0]
     
-    if len(prefix_mask) > 0:
-        assert min(payload_mask) > max(prefix_mask)
-    if len(suffix_mask) > 0:
-        assert max(payload_mask) < min(suffix_mask)
+    if len(prefix_indices) > 0:
+        assert min(payload_indices) > max(prefix_indices)
+    if len(suffix_indices) > 0:
+        assert max(payload_indices) < min(suffix_indices)
 
     # Create the optim_mask as the combination of prefix and suffix indices
     optim_mask = torch.cat([prefix_indices, suffix_indices])
@@ -567,26 +567,6 @@ DEFAULT_GENERATION_PARAMS = {
     "logprobs": True,
 }
 
-def bulk_logits(
-    model: transformers.AutoModelForCausalLM,
-    data: torch.tensor,
-    batch_size=BULK_FORWARD_DEFAULT_BSZ,
-    generation_params=DEFAULT_GENERATION_PARAMS
-):
-    with torch.no_grad():
-        data_split = torch.split(data, BULK_FORWARD_DEFAULT_BSZ)
-        list_of_results = []
-        for data_piece in data_split:
-            try:
-                data_piece_result = model(input_ids=data_piece.to(model.device)).logits
-            except torch.cuda.OutOfMemoryError:
-                data_piece_result = bulk_logits(model, data_piece, batch_size // 2, generation_params)
-            list_of_results.append(data_piece)
-            del data_piece_result
-            gc.collect()
-            torch.cuda.empty_cache()
-    return torch.cat(list_of_results, dim=0)
-
 def bulk_logits_iter(
     model: transformers.AutoModelForCausalLM,
     data: torch.tensor,
@@ -601,18 +581,14 @@ def bulk_logits_iter(
         for i in range(0, len(data), batch_size):
             data_piece = data[i:i + batch_size]
             try:
-
-
                 logits = model(
                     input_ids=data_piece.to(model.device), 
                 ).logits
+                yield logits
                 gc.collect()
                 torch.cuda.empty_cache()
-                yield logits
             except torch.cuda.OutOfMemoryError:
                 # If OOM occurs, recursively process with smaller batch size
-                
-                del current_cache
                 gc.collect()
                 torch.cuda.empty_cache()
                 sub_iterator = bulk_logits_iter(
@@ -621,81 +597,6 @@ def bulk_logits_iter(
                     batch_size // 2, 
                     generation_params,
                 )
-                for sub_result in sub_iterator:
-                    yield sub_result
-                    del sub_result
-                    gc.collect()
-                    torch.cuda.empty_cache()
-            
-            # Clean up memory after each batch
-            gc.collect()
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-
-
-def bulk_logits_from_embeds(
-    model: transformers.AutoModelForCausalLM,
-    data: torch.tensor,
-    batch_size=BULK_FORWARD_DEFAULT_BSZ,
-    generation_params=DEFAULT_GENERATION_PARAMS
-):
-    with torch.no_grad():
-        data_split = torch.split(data, BULK_FORWARD_DEFAULT_BSZ)
-        list_of_results = []
-        for data_piece in data_split:
-            try:
-                data_piece_result = model(inputs_embeds=data_piece.to(model.device)).logits
-            except torch.cuda.OutOfMemoryError:
-                data_piece_result = bulk_logits_from_embeds(model, data_piece, batch_size // 2, generation_params)
-            list_of_results.append(data_piece_result.detach())
-            del data_piece_result
-            gc.collect()
-            torch.cuda.empty_cache()
-    return torch.cat(list_of_results, dim=0)
-
-def bulk_logits_from_embeds_iter(
-    model: transformers.AutoModelForCausalLM,  # Changed to AutoModelForCausalLM to match logits usage
-    data: torch.tensor,
-    batch_size=BULK_FORWARD_DEFAULT_BSZ,
-    generation_params=DEFAULT_GENERATION_PARAMS
-):
-    """
-    Iterator version of bulk_embeds that yields logits one batch at a time
-    to reduce memory usage. Returns logits from the model.
-    
-    Args:
-        model: HuggingFace transformer model
-        data: Input tensor of token IDs
-        batch_size: Initial batch size (will be reduced if OOM occurs)
-        generation_params: Additional parameters for generation
-        
-    Yields:
-        torch.Tensor: Logit tensors for each batch (on CPU)
-    """
-    with torch.no_grad():
-        for i in range(0, len(data), batch_size):
-            data_piece = data[i:i + batch_size]
-            try:
-                # Get logits from model
-                logits = model(inputs_embeds=data_piece.to(model.device)).logits
-                
-                # Move to CPU and clear GPU memory
-                cpu_logits = logits.cpu()
-                del logits
-                gc.collect()
-                torch.cuda.empty_cache()
-                
-                yield cpu_logits
-                
-            except torch.cuda.OutOfMemoryError:
-                # If OOM occurs, recursively process with smaller batch size
-                sub_iterator = bulk_logits_from_embeds_iter(
-                    model,
-                    data_piece,
-                    max(1, batch_size // 2),
-                    generation_params
-                )
-                
                 for sub_result in sub_iterator:
                     yield sub_result
                     del sub_result
@@ -776,21 +677,6 @@ def target_logprobs(
     loss_tensor = torch.cat(losses_list)
     return loss_tensor
 
-def target_logprobs_from_embeds(
-    model: transformers.AutoModelForCausalLM,
-    tokenizer: transformers.AutoTokenizer,
-    inputs_embeds: torch.tensor,
-    masks_data: typing.Dict[str, torch.tensor],
-    target_tokens: torch.tensor,
-    logger: experiment_logger.ExperimentLogger = None
-):
-    target_mask = masks_data["target_mask"]
-    losses_list = []
-    for logit_piece in bulk_logits_from_embeds_iter(model, inputs_embeds):
-        loss_tensor = UNREDUCED_CE_LOSS(torch.transpose(logit_piece[:, target_mask - 1, :], 1, 2), target_tokens.repeat((logit_piece.shape[0], 1)).to(logit_piece.device)).sum(dim=1)
-        losses_list.append(loss_tensor)
-    loss_tensor = torch.cat(losses_list)
-    return loss_tensor
 
 DEFAULT_TEXT_GENERATION_CONFIG = {
     "do_sample": False,

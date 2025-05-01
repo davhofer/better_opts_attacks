@@ -362,11 +362,9 @@ def _tokenize_fn(strings, tokenizer):
         truncation=True,
     )
 
-    input_ids_lens = [tokenized["input_ids"].input_ids.ne(tokenizer.pad_token_id).sum().item() for tokenized in tokens]
     return {
         "input_ids": tokens["input_ids"],
-        "attention_mask": tokens["attention_mask"],
-        "input_ids_lens": input_ids_lens
+        "attention_mask": tokens["attention_mask"]
     }
 
 
