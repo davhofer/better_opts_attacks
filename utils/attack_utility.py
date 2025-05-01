@@ -172,10 +172,11 @@ def string_masks(
         suffix_mask[suffix_span["start"]:suffix_span["end"]] = True
     
     # Create payload mask (between prefix and suffix)
+    payload_span = find_containing_token_span(tokenizer, full_text, payload_string, final_tokens)
+
     payload_mask = torch.zeros(seq_length, dtype=torch.bool)
-    if prefix_span and suffix_span:
-        payload_mask[prefix_span["end"]:suffix_span["start"]] = True
-    
+    payload_mask[payload_span["start"]:payload_span["end"]] = True
+
     # Create target mask
     target_start = len(full_text) - len(target_string)
     for i, (start, end) in enumerate(char_spans):
@@ -193,6 +194,11 @@ def string_masks(
     target_indices = torch.where(target_mask)[0]
     input_indices = torch.where(input_mask)[0]
     
+    if len(prefix_mask) > 0:
+        assert min(payload_mask) > max(prefix_mask)
+    if len(suffix_mask) > 0:
+        assert max(payload_mask) < min(suffix_mask)
+
     # Create the optim_mask as the combination of prefix and suffix indices
     optim_mask = torch.cat([prefix_indices, suffix_indices])
     
@@ -207,6 +213,59 @@ def string_masks(
             "payload_mask": payload_indices
         }
     }
+
+
+def find_containing_token_span(tokenizer: transformers.PreTrainedTokenizer,
+                               full_text: str,
+                               target_text: str,
+                               full_tokens: typing.List[int]) -> None | typing.Dict[str, typing.Any]:
+    """
+    Find the smallest contiguous sequence of tokens that cleanly contains the target_text.
+    """
+    # Get the token ids and offsets for the full text
+    encoding = tokenizer(full_text, return_offsets_mapping=True, add_special_tokens=False)
+    char_spans = encoding.offset_mapping
+    
+    # Find the character positions of target_text in full_text
+    start_pos = full_text.find(target_text)
+    if start_pos == -1:
+        return None
+    end_pos = start_pos + len(target_text)
+    
+    # Find the smallest token span that contains the target text
+    token_start = None
+    token_end = None
+    
+    # Find the first token that contains or is after the start position
+    for i, (start, end) in enumerate(char_spans):
+        # Token that contains or is after the start position
+        if end > start_pos:
+            token_start = i
+            break
+    
+    # Find the last token that contains or is before the end position
+    for i in range(len(char_spans) - 1, -1, -1):
+        start, end = char_spans[i]
+        # Token that contains or is before the end position
+        if start < end_pos:
+            token_end = i + 1  # +1 because end is exclusive
+            break
+    
+    if token_start is None or token_end is None:
+        return None
+    
+    # Verify the decoded tokens contain the target_text
+    span_tokens = full_tokens[token_start:token_end]
+    decoded = tokenizer.decode(span_tokens, clean_up_tokenization_spaces=False)
+    
+    assert target_text in decoded, f"Target text: {target_text} not found in decoded string: {decoded}"
+    
+    return {
+        "start": token_start,
+        "end": token_end,
+        "text": decoded
+    }
+
 def find_clean_token_span(tokenizer: transformers.PreTrainedTokenizer, 
                          full_text: str,
                          target_text: str,
@@ -533,31 +592,23 @@ def bulk_logits_iter(
     data: torch.tensor,
     batch_size=512,
     generation_params=DEFAULT_GENERATION_PARAMS,
-    resettable_cache=None
 ):
     """
     Iterator version of bulk_logits that yields results one batch at a time
     to reduce memory usage. Now supports past_key_values for prefix caching.
     """
     with torch.no_grad():
-        current_cache = None
         for i in range(0, len(data), batch_size):
             data_piece = data[i:i + batch_size]
             try:
 
-                if resettable_cache is not None:
-                    resettable_cache.reset_to_original()
 
                 logits = model(
                     input_ids=data_piece.to(model.device), 
-                    past_key_values=current_cache,
-                    use_cache = True if current_cache is not None else False
                 ).logits
-                
-                del logits
                 gc.collect()
                 torch.cuda.empty_cache()
-                yield cpu_logits
+                yield logits
             except torch.cuda.OutOfMemoryError:
                 # If OOM occurs, recursively process with smaller batch size
                 
@@ -569,8 +620,6 @@ def bulk_logits_iter(
                     data_piece, 
                     batch_size // 2, 
                     generation_params,
-                    past_key_values=past_key_values,
-                    min_static_index=min_static_index  # Pass the original past_key_values
                 )
                 for sub_result in sub_iterator:
                     yield sub_result
@@ -664,8 +713,6 @@ def bulk_forward_iter(
     data: torch.tensor,
     batch_size=BULK_ATT_FORWARD_DEFAULT_SIZE,
     generation_params=DEFAULT_GENERATION_PARAMS,
-    past_key_values=None, # Add this parameter
-    min_static_length=0
 ) -> typing.Iterator[typing.Tuple[torch.Tensor, typing.Tuple[torch.Tensor, ...]]]:
     """
     Iterator that yields both logits and attentions one batch at a time.
@@ -677,30 +724,16 @@ def bulk_forward_iter(
         - attentions: tuple of attention tensors for each layer
     """
     with torch.no_grad():
-        current_cache = None
-        import pdb
         for i in range(0, len(data), batch_size):
             current_batch_size = min(batch_size, len(data) - i)
             data_piece = data[i:i + batch_size]
             
-            pdb.set_trace()
             # If past_key_values is provided, expand it to match the current batch size
-            if current_cache is None and past_key_values is not None:
-                current_cache = transformers.DynamicCache()
-                for idx, (k, v) in enumerate(past_key_values):
-                    k_exp = k.expand(batch_size, -1, -1, -1)
-                    v_exp = v.expand(batch_size, -1, -1, -1)
-                    current_cache.update(k_exp, v_exp, idx)
             try:
                 output = model(
                     input_ids=data_piece.to(model.device),
-                    output_attentions=True,
-                    past_key_values=current_cache,  # Add this parameter
-                    use_cache=True if current_cache is not None else False  # Add this parameter
+                    output_attentions=True
                 )
-                if current_cache is not None:
-                    current_cache = truncate_cache(current_cache, min_static_length)
-
                 yield output.logits, output.attentions
                 
             except torch.cuda.OutOfMemoryError:
@@ -712,8 +745,6 @@ def bulk_forward_iter(
                     data_piece, 
                     batch_size // 2, 
                     generation_params,
-                    past_key_values=past_key_values,
-                    min_static_length=min_static_length # Pass the original past_key_values
                 )
                 for sub_logits, sub_attentions in sub_iterator:
                     yield sub_logits, sub_attentions
@@ -737,17 +768,9 @@ def target_logprobs(
     **kwargs
 ):
     target_mask = masks_data["target_mask"]
-    try:
-        past_key_values = kwargs["past_key_values"]
-        min_static_index = kwargs["min_static_index"]
-    except KeyError:
-        past_key_values = None
-        min_static_index = 0
-
-    input_points_to_send = input_points[:, min_static_index:]
     
     losses_list = []
-    for logit_piece in bulk_logits_iter(model, input_points_to_send, past_key_values=past_key_values, min_static_index=min_static_index):
+    for logit_piece in bulk_logits_iter(model, input_points):
         loss_tensor = UNREDUCED_CE_LOSS(torch.transpose(logit_piece[:, -(len(target_mask) + 1):- 1, :], 1, 2), target_tokens.repeat((logit_piece.shape[0], 1)).to(logit_piece.device)).sum(dim=1)
         losses_list.append(loss_tensor)
     loss_tensor = torch.cat(losses_list)

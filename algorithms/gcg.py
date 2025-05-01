@@ -210,14 +210,6 @@ def custom_gcg(
     logprobs_chunk = []
     generated_output_string_chunk = []
 
-    if use_kv_caching:
-        min_static_index = min(optim_mask) - 1
-        most_common_input_tokens = input_tokens[:min_static_index]
-        static_cache = attack_utility.create_static_cache_for_prefix(model, most_common_input_tokens)
-    else:
-        min_static_index = 0
-        static_cache = None
-    
     for step_num in range(custom_gcg_hyperparams["max_steps"]):
         
         best_tokens_indices = signal_function(model, tokenizer, current_best_tokens, masks_data, custom_gcg_hyperparams["topk"], logger, step_num=step_num, **(signal_kwargs or {}))
@@ -260,11 +252,6 @@ def custom_gcg(
         gc.collect()
         torch.cuda.empty_cache()
         substitution_data_chunk.append(substitution_data)
-
-        if true_loss_kwargs is None:
-            true_loss_kwargs = {}
-        true_loss_kwargs["past_key_values"] = cache
-        true_loss_kwargs["min_static_index"] = min_static_index
         
         true_losses = true_loss_function(model, tokenizer, substitution_data, masks_data, input_tokens[target_mask], logger, **(true_loss_kwargs or {}))
         true_losses_chunk.append(true_losses)

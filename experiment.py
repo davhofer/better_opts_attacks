@@ -217,8 +217,6 @@ def uniform_ideal_attentions(
     masks_data,
     *,
     attention_mask_strategy,
-    past_key_values=None,
-    min_static_index=None
 ):
     if input_points.dim() == 1:
         input_points = torch.unsqueeze(input_points, dim=0)
@@ -231,12 +229,7 @@ def uniform_ideal_attentions(
         attention_mask = torch.cat((payload_mask, control_mask))
     else:
         raise ValueError(f"attention_mask_strategy {attention_mask_strategy} is not implemented yet.")
-    if past_key_values is None:
-        dummy_attentions = torch.stack(model(input_ids=torch.unsqueeze(input_points[0], dim=0).to(model.device), output_attentions=True, use_cache=False).attentions)
-    else:
-        import pdb
-        pdb.set_trace()
-        dummy_attentions = torch.stack(model(input_ids=torch.unsqueeze(input_points[0], dim=0).to(model.device), past_key_values=past_key_values, use_cache=True, output_attentions=True).attentions)
+    dummy_attentions = torch.stack(model(input_ids=torch.unsqueeze(input_points[0], dim=0).to(model.device), output_attentions=True).attentions)
     ideal_shape = dummy_attentions.shape
     ideal_shape = (ideal_shape[0], input_points.shape[0], ideal_shape[2], ideal_shape[3], ideal_shape[4])
     attentions = torch.zeros(ideal_shape)
