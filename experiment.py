@@ -375,7 +375,7 @@ def attack_secalign_model(
             },
         ],
         "early_stop": False,
-        "eval_every_step": True   
+        "eval_every_step": False   
     }
     logger.log(adversarial_parameters_dict_2)
     loss_sequences_real, best_output_sequences_real = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, adversarial_parameters_dict_2, logger)
