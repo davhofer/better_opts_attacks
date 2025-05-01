@@ -226,22 +226,12 @@ def load_lora_model(model_name_or_path, load_model=True, **kwargs):
     frontend_delimiters = configs[1] if configs[1] in config.DELIMITERS else base_model_path.split('/')[-1]
     model, tokenizer = load_model_and_tokenizer(base_model_path, load_model=load_model, **kwargs)
     
-    if "Instruct" not in model_name_or_path:
-        special_tokens_dict = dict()
-        special_tokens_dict["pad_token"] = config.DEFAULT_TOKENS['pad_token']
-        special_tokens_dict["eos_token"] = config.DEFAULT_TOKENS['eos_token']
-        special_tokens_dict["bos_token"] = config.DEFAULT_TOKENS['bos_token']
-        special_tokens_dict["unk_token"] = config.DEFAULT_TOKENS['unk_token']
-        special_tokens_dict["additional_special_tokens"] = config.SPECIAL_DELM_TOKENS
-    else:
-        # This entire thing is a hack to use the same tokens for Instruct models as the default ones offered by the models
-        # The paper claims that they use the same ones offered by the model.
-        # But the codebase doesn't seem to reflect that, either in the training function or the testing function
-        # We take the paper as the gospel truth and treat their offered delimiters as the correct ones
-        # WHich means instead of replacing pad_token, eos_token etc., we just add these ones as special
-        special_tokens_dict = dict()
-        special_tokens_dict["additional_special_tokens"] = [config.DEFAULT_TOKENS['pad_token'], config.DEFAULT_TOKENS['eos_token'], config.DEFAULT_TOKENS['bos_token'], config.DEFAULT_TOKENS['unk_token']] + config.SPECIAL_DELM_TOKENS
-
+    special_tokens_dict = dict()
+    special_tokens_dict["pad_token"] = config.DEFAULT_TOKENS['pad_token']
+    special_tokens_dict["eos_token"] = config.DEFAULT_TOKENS['eos_token']
+    special_tokens_dict["bos_token"] = config.DEFAULT_TOKENS['bos_token']
+    special_tokens_dict["unk_token"] = config.DEFAULT_TOKENS['unk_token']
+    special_tokens_dict["additional_special_tokens"] = config.SPECIAL_DELM_TOKENS
     smart_tokenizer_and_embedding_resize(special_tokens_dict=special_tokens_dict, tokenizer=tokenizer, model=model, load_model=load_model)
     
     tokenizer.model_max_length = 512 ### the default value is too large for model.generation_config.max_new_tokens
@@ -250,13 +240,14 @@ def load_lora_model(model_name_or_path, load_model=True, **kwargs):
     return model, tokenizer, frontend_delimiters
 
 
-
 def test_model_output(llm_input, model, tokenizer):
     model.generation_config.max_new_tokens = tokenizer.model_max_length
     model.generation_config.do_sample = False
     model.generation_config.temperature = 0.0
 
-    llm_output = []
+    in_response = 0
+    begin_with = 0
+    outputs = []
     for i, inpt in enumerate(llm_input):
         input_ids = _tokenize_fn([inpt], tokenizer)['input_ids'][0].unsqueeze(0)
         outp = tokenizer.decode(
@@ -268,13 +259,18 @@ def test_model_output(llm_input, model, tokenizer):
             )[0][input_ids.shape[1]:]
         )
         start = 0 
-        while outp[start] == ' ':
-            start += 1
+        while outp[start] == ' ': start += 1
         outp = outp[start:outp.find(tokenizer.eos_token)]
 
-        llm_output.append(outp)
-    return llm_output
-
+        # sample_in_response = TEST_INJECTED_WORD.lower() in outp.lower()
+        # sample_begin_with = outp.strip().lower().startswith(TEST_INJECTED_WORD.lower())
+        # print(inpt + outp, '\n\n\n')
+        # print(i+1, 'in-response', in_response / (i+1), 'begin-with', begin_with / (i+1), end='\r')
+        # sys.stdout.flush()
+        # if sample_in_response: in_response += 1 
+        # if sample_begin_with: begin_with += 1
+        outputs.append(outp)
+    return outputs
 
 
 @dataclasses.dataclass
