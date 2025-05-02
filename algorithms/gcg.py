@@ -276,7 +276,7 @@ def custom_gcg(
                 else:
                     successive_correct_outputs = 0
     
-        if (step_num + 1) % 1 == 0:
+        if (step_num + 1) % 10 == 0:
             logger.log(substitution_data_chunk, step_num=step_num)
             logger.log(true_losses_chunk, step_num=step_num)
             logger.log(current_best_true_loss_chunk, step_num=step_num)
