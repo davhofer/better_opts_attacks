@@ -411,7 +411,7 @@ def run_secalign_eval_on_single_gpu(expt_folder_prefix: str, self_device_idx, ex
     defence = "secalign"
     torch.cuda.set_device(self_device_idx)
     try:
-        model, tokenizer, frontend_delimiters = secalign.maybe_load_secalign_defended_model(model_name, defence, device_map=f"cuda:{str(self_device_idx)}", torch_dtype=torch.float16)
+        model, tokenizer, frontend_delimiters = secalign.maybe_load_secalign_defended_model(model_name, defence, device_map=f"cuda:{str(self_device_idx)}", torch_dtype=torch.float16, attn_implementation="eager")
         model.generation_config.pad_token_id = tokenizer.pad_token_id
     except Exception:
         traceback.print_exc()
@@ -465,13 +465,22 @@ if __name__ == "__main__":
         default=0, 
         help='GPU device index to use (default: 0)'
     )
-    parser.add_argument(
+    multiprocess_group = parser.add_mutually_exclusive_group(required=False)
+    multiprocess_group.add_argument(
         "--multiprocess",
-        type=bool,
-        default=True,
-        help="Whether to use multiple processes or not (default: True)"
+        dest="multiprocess",
+        action="store_true",
+        help="Use multiple processes (default)"
     )
+    multiprocess_group.add_argument(
+        "--no-multiprocess",
+        dest="multiprocess",
+        action="store_false",
+        help="Do not use multiple processes"
+    )
+    parser.set_defaults(multiprocess=True)
     args = parser.parse_args()
+
 
     with open(secalign.ALPACAFARM_DATASET_PATH, "r") as alpacaeval_file:
         alpacaeval = json.load(alpacaeval_file)
@@ -488,7 +497,7 @@ if __name__ == "__main__":
             }
         ]
         for x in alpacaeval
-    ]
+    ][104:]
 
     if args.multiprocess:
         EXPT_FOLDER_PREFIX = "logs/serious_attack_5"
