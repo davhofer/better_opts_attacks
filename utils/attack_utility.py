@@ -5,6 +5,8 @@ import random
 import gc
 import time
 import copy
+import peft
+
 import utils.experiment_logger as experiment_logger
 
 def invertibility_filter(token_ids, **kwargs):
@@ -815,3 +817,10 @@ def expand_cache_for_batch(cache, target_batch_size):
         cache.batch_size = target_batch_size
     
     return cache
+
+
+def _get_layer_obj(model):
+    if isinstance(model, peft.PeftModel):
+        return model.base_model.model.model.layers
+    elif isinstance(model, transformers.LlamaPreTrainedModel):
+        return model.model.layers

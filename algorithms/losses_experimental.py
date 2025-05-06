@@ -7,6 +7,7 @@ import datasets
 import random
 import copy
 import sys
+import time
 
 import utils.attack_utility as attack_utility
 import utils.experiment_logger as experiment_logger
@@ -484,7 +485,21 @@ def uniform_ideal_attentions(
     return attentions[:, :, :, -(len(target_mask) + 1):-1, :]
 
 
-def get_dolly_data(logger, tokenizer, prompt_template, init_config, target, harmful_inst, convert_to_secalign_format=False):
+def get_dolly_data(tokenizer, input_tokenized_data, logger):
+
+    tokens = input_tokenized_data["tokens"]
+    masks_data = input_tokenized_data["masks"]
+    target = tokenizer.decode(tokens[masks_data["target_mask"]], clean_up_tokenization_spaces=False)
+
+    prefix_length = len(masks_data["prefix_mask"])
+    suffix_length = len(masks_data["suffix_mask"])
+
+    init_config = {
+        "strategy_type": "random",
+        "prefix_length": prefix_length,
+        "suffix_length": suffix_length,
+        "seed": int(time.time())
+    }
 
     assert (init_config is not None) and (target is not None)
 
@@ -504,8 +519,6 @@ def get_dolly_data(logger, tokenizer, prompt_template, init_config, target, harm
         ]
         for x in dolly_data
     ]
-    if convert_to_secalign_format:
-        dolly_data = [secalign._convert_to_secalign_format(input_conv, prompt_template, tokenizer, harmful_inst) for input_conv in dolly_data]
 
     random_input_conv = random.choice(dolly_data)
     input_tokenized_data, true_init_config = attack_utility.generate_valid_input_tokenized_data(tokenizer, random_input_conv, target, init_config, logger)
@@ -527,9 +540,124 @@ def get_dolly_data(logger, tokenizer, prompt_template, init_config, target, harm
         )
     return new_dolly_data, true_init_config
 
+class SingleAttentionGradHook:
+    def __init__(self, model, input_tokenized_data):
+        self.model = model
+        self.num_layers = len(attack_utility._get_layer_obj(model))
+        self.attention_weights = [None] * self.num_layers
+        self.attention_grads = [None] * self.num_layers
+        self.input_tokenized_data = input_tokenized_data
+        
+    def accumulate_grads(self):
+        self.model.train()
+        for param in self.model.parameters():
+            param.requires_grad = True
+        
+        with torch.enable_grad():
+            input_ids = self.input_tokenized_data["tokens"]
+            device = next(self.model.parameters()).device
+            input_tensor = torch.unsqueeze(input_ids.to(device), dim=0)
+            
+            outputs = self.model(input_ids=input_tensor, output_attentions=True)
+            for attn_weight in outputs.attentions:
+                attn_weight.retain_grad()
+            self.attention_weights = outputs.attentions
 
+            target_mask = self.input_tokenized_data["masks"]["target_mask"]
+            target_logits = outputs.logits[0, target_mask - 1, :]
+            true_labels = self.input_tokenized_data["tokens"][target_mask].to(device)
+            loss = torch.nn.CrossEntropyLoss()(target_logits, true_labels)                
+            loss.backward()
+            for i in range(self.num_layers):
+                if self.attention_weights[i] is not None and hasattr(self.attention_weights[i], 'grad'):
+                    self.attention_grads[i] = self.attention_weights[i].grad.detach().to("cpu")
+    
+class MultiAttentionGradHook:
+    def __init__(self, model, input_tokenized_data_list):
+        self.model = model
+        self.input_tokenized_data_list = input_tokenized_data_list
+        self.num_layers = len(attack_utility._get_layer_obj(model))
+        self.single_attention_grad_hooks_list = [SingleAttentionGradHook(model, x) for x in input_tokenized_data_list]
+        self.grads = [None] * len(self.single_attention_grad_hooks_list)
+        self.accumulated = False
 
+    def accumulate_gradients(self):
+        if self.accumulated:
+            raise ValueError(f"Don't call accumulate when already accumulated")
+        for i, attn_hook in enumerate(self.single_attention_grad_hooks_list):
+            attn_hook.accumulate_grads()
+            self.grads[i] = attn_hook.attention_grads
+            gc.collect()
+            torch.cuda.empty_cache()
+        self.accumulated = True
+        gc.collect()
 
+    def _are_we_same_example(self):
+        masks_data_list = []
+        non_optim_tokens_list = []
+        for input_tokenized_data in self.input_tokenized_data_list:
+            tokens = input_tokenized_data["tokens"]
+            optim_mask = input_tokenized_data["masks"]["optim_mask"]
+            non_optim_tokens = tokens[[i for i in range(len(tokens)) if i not in optim_mask]]
+            non_optim_tokens_list.append(non_optim_tokens)
+            masks_data_list.append(input_tokenized_data["masks"])
+        return (all([x.data.tolist() == non_optim_tokens_list[0].data.tolist() for x in non_optim_tokens_list])) and (all([x == masks_data_list[0] for x in masks_data_list]))
 
-def abs_grad_dolly_layer_weights(model, tokenizer, input_tokenized_data, logger, **kwargs):
-    dolly_data = datasets.load_dataset("")
+    def layer_wise_abs_grads(self):
+        if not self._are_we_same_example():
+            raise ValueError("This only makes sense when the inputs are all of the same structure")
+        
+        if not self.accumulated:
+            self.accumulate_gradients()
+
+        target_mask = self.input_tokenized_data_list[0]["masks"]["target_mask"]
+        layer_wise_abs_grads_sums = []
+        for layer_idx in range(self.num_layers):
+            layer_wise_abs_grads_sums.append([])
+            for per_ex_grad_val in self.grads:
+                layer_wise_abs_grads_sums[layer_idx].append(torch.abs(per_ex_grad_val[layer_idx][0][:, target_mask - 1, :]).mean(dim=-1).sum(dim=-1))
+        layer_wise_abs_grads_means = [torch.mean(torch.stack(layer_wise_abs_grads_sums[layer_idx]), dim=0) for layer_idx in range(self.num_layers)]
+        return layer_wise_abs_grads_means
+
+def generate_random_inits_for_one_example(model, tokenizer, input_tokenized_data, num_randoms):
+    new_input_tokenized_data_list = []
+    for _ in range(num_randoms):
+        optim_mask = input_tokenized_data["masks"]["optim_mask"]
+        new_random = torch.randint_like(optim_mask, 0, tokenizer.vocab_size)
+        new_tokens = input_tokenized_data["tokens"]
+        new_tokens[optim_mask] = new_random
+        new_input_tokenized_data = {
+            "tokens": new_tokens,
+            "masks": input_tokenized_data["masks"]
+        }
+        new_input_tokenized_data_list.append(new_input_tokenized_data)
+    return new_input_tokenized_data_list
+
+def attention_heads_across_training_examples(model, tokenizer, dolly_full_data, num_examples, num_randoms_per_example):
+
+    dolly_relevant_examples = random.sample(dolly_full_data, num_examples)    
+
+    per_example_output_means = []
+    per_example_output_stds = []
+    for example, relevant_example in enumerate(dolly_relevant_examples):
+        random_perturbs = generate_random_inits_for_one_example(model, tokenizer, relevant_example, num_randoms_per_example)
+        mgh = MultiAttentionGradHook(model, random_perturbs)
+        mgh.accumulate_gradients()
+        output_mean, output_std = mgh.layer_wise_abs_grads()
+        per_example_output_means.append(output_mean)
+        per_example_output_stds.append(output_std)
+        gc.collect()
+        torch.cuda.empty_cache()
+    return per_example_output_means, per_example_output_stds
+
+def abs_grad_dolly_layer_weights(model, tokenizer, input_tokenized_data, logger):
+    dolly_convolved_dataset, _ = get_dolly_data(tokenizer, input_tokenized_data, logger)
+    means, stds = attention_heads_across_training_examples(model, tokenizer, dolly_convolved_dataset, 100, 20)
+    example_mean_all = []
+    example_std_all = []
+    for example_num, (example_output_mean, example_output_std) in enumerate(zip(means, stds)):
+        example_mean_all.append(torch.stack(example_output_mean))
+        example_std_all.append(torch.stack(example_output_std))
+
+    final_mean = torch.mean(torch.stack(example_mean_all), dim=0)
+    return final_mean
