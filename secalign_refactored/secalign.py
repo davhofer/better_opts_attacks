@@ -1,7 +1,3 @@
-from .secalign_raw_code import config as config
-from .secalign_raw_code import test as test
-from .secalign_raw_code import struq as struq
-
 from copy import deepcopy
 import torch
 import transformers
@@ -10,6 +6,14 @@ import os
 import dataclasses
 from enum import Enum
 from typing import Union, List, Dict
+import sys
+
+from .secalign_raw_code import config as config
+from .secalign_raw_code import test as test
+from .secalign_raw_code import struq as struq
+
+sys.path.append("..")
+from utils import attack_utility
 
 IGNORE_INDEX = -100
 DEFAULT_TOKENS = {'pad_token': '[PAD]', 'eos_token': '</s>', 'bos_token': '<s>', 'unk_token': '<unk>'}
@@ -301,57 +305,6 @@ class StruqConversation:
             stop_token_ids=self.stop_token_ids,
         )
 
-
-# ROLE_STR_MAP = {
-#     "system": Role.SYSTEM,
-#     "user": Role.USER,
-#     "assistant": Role.ASSISTANT
-# }
-# def get_conversation_tokens(
-#     model: transformers.PreTrainedModel,
-#     tokenizer,
-#     defence,
-#     frontend_delimiters,
-#     conversation
-# ) -> str:
-#     if "instruct" in model.name.lower():
-#         return tokenizer.apply_chat_template(conversation, add_generation_prompt=True, tokenize=True)["input_ids"]
-#     else:
-#         _ = config.PROMPT_FORMAT[frontend_delimiters]["prompt_input"]
-#         inst_delm = config.DELIMITERS[frontend_delimiters][0]
-#         _ = config.DELIMITERS[frontend_delimiters][1]
-#         resp_delm = config.DELIMITERS[frontend_delimiters][2]
-#         try:
-#             fastchat.conversation.register_conv_template(
-#                 StruqConversation(
-#                     name=f"struq_{model.name}_{defence}",
-#                     system_message=config.SYS_INPUT,
-#                     roles=(inst_delm, resp_delm),
-#                     sep="\n\n",
-#                     sep2="</s>",
-#                 ),
-#             )
-#         except AssertionError:
-#             pass        
-#         conv_template = fastchat.conversation.get_conv_template(f"struq_{model.name}_{defence}")
-#         conversation = [Message(role=ROLE_STR_MAP[x["role"]], content=x["content"]) for x in conversation]
-#         if conversation[0].role == Role.SYSTEM:
-#             conv_template.set_system_message(conversation[0].content)
-#         conv_template.messages = []
-#         assert conversation[1].role == Role.USER
-#         conv_template.append_message(conv_template.roles[0], conversation[1].content)
-#         conv_template.append_message(conv_template.roles[1], "") # equivalent of add_generation_prompt
-#         sep = deepcopy(conv_template.sep); conv_template.sep = ""
-#         prompt = conv_template.get_prompt()
-#         conv_template.sep = sep
-#         tokens = tokenizer(prompt, add_special_tokens=False).input_ids
-#             # tokenizer(" ", add_special_tokens=False).input_ids + \
-#             # tokenizer(conv_template.sep, add_special_tokens=False).input_ids
-#         return tokens
-
-
-
-
 def _tokenize_fn(strings, tokenizer):
     """Tokenize a list of strings."""
     tokens = tokenizer(
@@ -375,3 +328,44 @@ def maybe_load_secalign_defended_model(model_name, defence, **kwargs):
         model = transformers.AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
         tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
         return model, tokenizer, None
+
+def secalign_filter(token_ids, **kwargs):
+
+    masks_data = kwargs.get("masks_data", None)
+    tokenizer = kwargs.get("tokenizer", None)
+
+    if tokenizer is None:
+        raise ValueError(f"SecAlign filter function needs a tokenizer to be sent through")
+
+    is_invertible = attack_utility.invertibility_filter(token_ids, tokenizer=tokenizer)
+
+    if masks_data is None:
+        decoded_string = tokenizer.decode(token_ids)
+        return not any([spec_token_id in decoded_string for spec_token_id in tokenizer.get_added_vocab()])
+    prefix_mask = masks_data["prefix_mask"]
+    suffix_mask = masks_data["suffix_mask"]
+    decoded_prefix = tokenizer.decode(token_ids[prefix_mask])
+    decoded_suffix = tokenizer.decode(token_ids[suffix_mask])
+    prefix_contains_specs = any([spec_token_id in decoded_prefix for spec_token_id in tokenizer.get_added_vocab()])
+    suffix_contains_specs = any([spec_token_id in decoded_suffix for spec_token_id in tokenizer.get_added_vocab()])
+    
+    
+    return (not (prefix_contains_specs or suffix_contains_specs)) and is_invertible
+
+
+def _convert_to_secalign_format(
+    input_conv,
+    prompt_template,
+    tokenizer,
+    harmful_inst = SECALIGN_COMMON_INSTRUCTION
+):
+    assert isinstance(input_conv, list) and all([isinstance(conv_part, dict) for conv_part in input_conv])
+    inst_str = deepcopy(input_conv[0]["content"])
+    data_str = deepcopy(input_conv[1]["content"])
+    if data_str[-1] != '.' and data_str[-1] != '!' and data_str[-1] != '?': data_str += '.'
+    data_str += ' '     
+    data_str += attack_utility.ADV_PREFIX_INDICATOR + harmful_inst + " " + attack_utility.ADV_SUFFIX_INDICATOR
+    static_string = prompt_template.format_map({"instruction": inst_str, "input": data_str})
+    input_conv = tokenizer.batch_decode(tokenizer([static_string])["input_ids"], clean_up_tokenization_spaces=False)[0]
+    return input_conv
+

@@ -165,7 +165,6 @@ def custom_gcg(
     eval_initial,
     identical_outputs_before_stop,
     generation_config,
-    use_kv_caching = True
 ):
 
     logger.log(input_tokenized_data)
@@ -260,11 +259,11 @@ def custom_gcg(
         current_best_tokens = substitution_data[torch.argmin(true_losses)].clone()
         current_best_tokens_chunk.append(current_best_tokens)
         best_output_sequences.append(current_best_tokens.clone())
+        logprobs = attack_utility.target_logprobs(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger)
+        logprobs = logprobs.item()
+        logprobs_chunk.append(logprobs)
+        logprobs_sequences.append(logprobs)        
         if eval_every_step:
-            logprobs = attack_utility.target_logprobs(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger)
-            logprobs = logprobs.item()
-            logprobs_chunk.append(logprobs)
-            logprobs_sequences.append(logprobs)
             generated_output_tokens = model.generate(torch.unsqueeze(current_best_tokens[eval_input_mask], dim=0).to(model.device), attention_mask=torch.unsqueeze(torch.ones(current_best_tokens[eval_input_mask].shape), dim=0).to(model.device), **generation_config)
             generated_output_string = tokenizer.batch_decode(generated_output_tokens[:, eval_input_mask[-1] + 1 :])[0]
             generated_output_string_chunk.append(generated_output_string)

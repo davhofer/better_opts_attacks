@@ -64,7 +64,7 @@ def adversarial_opt(
         return loss_sequences, best_output_sequences, None
     elif attack_algorithm == "custom_gcg":
         early_stop = adversarial_parameters_dict.get("early_stop", True)
-        eval_every_step = adversarial_parameters_dict.get("eval_every_step", True),
+        eval_every_step = adversarial_parameters_dict.get("eval_every_step", False),
         identical_outputs_before_stop = adversarial_parameters_dict.get("identical_outputs_before_stop", 5)
         generation_config = adversarial_parameters_dict.get("generation_config", attack_utility.DEFAULT_TEXT_GENERATION_CONFIG)
         eval_initial = adversarial_parameters_dict.get("eval_initial", True)
@@ -132,7 +132,7 @@ def adversarial_opt(
 
 
         early_stop = adversarial_parameters_dict.get("early_stop", False)
-        eval_every_step = adversarial_parameters_dict.get("eval_every_step", True)
+        eval_every_step = adversarial_parameters_dict.get("eval_every_step", False)
         identical_outputs_before_stop = adversarial_parameters_dict.get("identical_outputs_before_stop", 5)
         generation_config = adversarial_parameters_dict.get("generation_config", attack_utility.DEFAULT_TEXT_GENERATION_CONFIG)
         eval_initial = adversarial_parameters_dict.get("eval_initial", True)

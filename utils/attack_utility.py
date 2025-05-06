@@ -577,6 +577,8 @@ def bulk_logits_iter(
     Iterator version of bulk_logits that yields results one batch at a time
     to reduce memory usage. Now supports past_key_values for prefix caching.
     """
+    if batch_size <= 64:
+        raise ValueError(f"This is too slow. Exiting.")
     with torch.no_grad():
         for i in range(0, len(data), batch_size):
             data_piece = data[i:i + batch_size]
@@ -624,6 +626,9 @@ def bulk_forward_iter(
         - logits: tensor of shape (batch_size, sequence_length, vocab_size)
         - attentions: tuple of attention tensors for each layer
     """
+    if batch_size <= 32:
+        raise ValueError(f"Can't with smaller sizes. Moving on.")
+
     with torch.no_grad():
         for i in range(0, len(data), batch_size):
             current_batch_size = min(batch_size, len(data) - i)

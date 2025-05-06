@@ -2,9 +2,16 @@ import torch
 import transformers
 import gc
 import typing
+import peft
+import datasets
+import random
+import copy
+import sys
 
 import utils.attack_utility as attack_utility
 import utils.experiment_logger as experiment_logger
+from secalign_refactored import secalign
+
 
 def process_batch_attentions(
     model: transformers.AutoModelForCausalLM,
@@ -340,7 +347,6 @@ def attention_metricized_v2_true_loss(
     loss_tensor = torch.cat(loss_tensors_list)
     return loss_tensor
 
-
 def kl_divergence_payload_only(
     model,
     tokenizer,
@@ -410,3 +416,120 @@ def pointwise_sum_of_differences_payload_only(
     product = batch_first_att_strategy.to(batch_first_losses.device) * batch_first_losses
     result = product.sum(dim=(1, 2, 3))
     return result
+
+
+def secalign_ideal_attention_v1(
+    model,
+    tokenizer,
+    input_points,
+    masks_data,
+    *,
+    attention_mask_strategy,
+    **kwargs
+):
+    if input_points.dim() == 1:
+        input_points = torch.unsqueeze(input_points, dim=0)
+    
+    payload_mask: torch.Tensor = masks_data["payload_mask"]
+    control_mask: torch.Tensor = masks_data["control_mask"]
+    target_mask: torch.Tensor = masks_data["target_mask"]
+
+    if attention_mask_strategy == "payload_only":
+        attention_mask = payload_mask
+        attention_mask_formatted = torch.zeros(input_points.shape)
+        attention_mask_formatted[:, attention_mask] = 1
+        attentions = model(input_ids=input_points.to(model.device), attention_mask=attention_mask_formatted.to(model.device), output_attentions=True).attentions
+    elif attention_mask_strategy == "payload_and_control":
+        attention_mask = torch.cat((payload_mask, control_mask))
+        attention_mask_formatted = torch.zeros(input_points.shape)
+        attention_mask_formatted[:, attention_mask] = 1
+        attentions = model(input_ids=input_points.to(model.device), attention_mask=attention_mask_formatted.to(model.device), output_attentions=True).attentions
+    # Removing these two, because it might be that we can emulate the squeezed
+    # versions with just modifying position_ids???
+    # 
+    # elif attention_mask_strategy == "payload_control_squeezed":
+    #     attention_mask = torch.cat((payload_mask, control_mask))
+    #     attentions = model(input_ids=input_points[:, sorted(attention_mask)], output_attentions=True).attentions
+    # elif attention_mask_strategy == "payload_squeezed":
+    #     attention_mask = payload_mask
+    #     attentions = model(input_ids=input_points[:, sorted(attention_mask)], output_attentions=True).attentions
+    else:
+        raise ValueError(f"attention_mask_strategy {attention_mask_strategy} is not implemented yet.")
+    return torch.stack(attentions)[:, :, :, target_mask - 1, :]
+
+def uniform_ideal_attentions(
+    model,
+    tokenizer,
+    input_points,
+    masks_data,
+    *,
+    attention_mask_strategy,
+):
+    if input_points.dim() == 1:
+        input_points = torch.unsqueeze(input_points, dim=0)
+    payload_mask: torch.Tensor = masks_data["payload_mask"]
+    target_mask: torch.Tensor = masks_data["target_mask"]
+    if attention_mask_strategy == "payload_only":
+        attention_mask = payload_mask
+    elif attention_mask_strategy == "payload_and_control":
+        control_mask: torch.Tensor = masks_data["control_mask"]    
+        attention_mask = torch.cat((payload_mask, control_mask))
+    else:
+        raise ValueError(f"attention_mask_strategy {attention_mask_strategy} is not implemented yet.")
+    dummy_attentions = torch.stack(model(input_ids=torch.unsqueeze(input_points[0], dim=0).to(model.device), output_attentions=True).attentions)
+    ideal_shape = dummy_attentions.shape
+    ideal_shape = (ideal_shape[0], input_points.shape[0], ideal_shape[2], ideal_shape[3], ideal_shape[4])
+    attentions = torch.zeros(ideal_shape)
+    attentions[:, :, :, :, attention_mask] = 1 / len(attention_mask)
+    return attentions[:, :, :, -(len(target_mask) + 1):-1, :]
+
+
+def get_dolly_data(logger, tokenizer, prompt_template, init_config, target, harmful_inst, convert_to_secalign_format=False):
+
+    assert (init_config is not None) and (target is not None)
+
+    dolly_15k_raw = datasets.load_dataset("databricks/databricks-dolly-15k")
+    dolly_15k_filtered = [x for x in dolly_15k_raw["train"] if (x["context"] != "" and x["instruction"] != "")]
+    dolly_data = [x for x in dolly_15k_filtered if len(x["context"]) <= 200 and len(x["instruction"]) < 300]
+    dolly_data = [
+        [
+            {
+                "role": "system",
+                "content": x["instruction"]
+            },
+            {
+                "role": "user",
+                "content": x["context"]
+            }
+        ]
+        for x in dolly_data
+    ]
+    if convert_to_secalign_format:
+        dolly_data = [secalign._convert_to_secalign_format(input_conv, prompt_template, tokenizer, harmful_inst) for input_conv in dolly_data]
+
+    random_input_conv = random.choice(dolly_data)
+    input_tokenized_data, true_init_config = attack_utility.generate_valid_input_tokenized_data(tokenizer, random_input_conv, target, init_config, logger)
+    true_prefix_tokens = input_tokenized_data["tokens"][input_tokenized_data["masks"]["prefix_mask"]]
+    true_suffix_tokens = input_tokenized_data["tokens"][input_tokenized_data["masks"]["suffix_mask"]]
+    new_dolly_data = []
+    for dolly_data_point in dolly_data:
+        current_input_tokenized_data, _ = attack_utility.generate_valid_input_tokenized_data(tokenizer, dolly_data_point, target, init_config, logger)
+        current_prefix_mask = current_input_tokenized_data["masks"]["prefix_mask"]
+        current_suffix_mask = current_input_tokenized_data["masks"]["suffix_mask"]
+        new_tokens = copy.deepcopy(current_input_tokenized_data["tokens"])
+        new_tokens[current_prefix_mask[-len(true_prefix_tokens):]] = true_prefix_tokens[-len(true_prefix_tokens):]
+        new_tokens[current_suffix_mask[:len(true_suffix_tokens)]] = true_suffix_tokens[:len(true_suffix_tokens)]
+        new_dolly_data.append(
+            {
+                "tokens": new_tokens,
+                "masks": current_input_tokenized_data["masks"]
+            }
+        )
+    return new_dolly_data, true_init_config
+
+
+
+
+
+def abs_grad_dolly_layer_weights(model, tokenizer, input_tokenized_data, logger, **kwargs):
+    dolly_data = datasets.load_dataset("")
