@@ -513,7 +513,7 @@ def initialize_adversarial_strings(tokenizer: transformers.AutoTokenizer, init_c
                 rand_token = random.randint(0, tokenizer.vocab_size)
                 prefix_random_tokens.append(rand_token)
             prefix_random_tokens = torch.tensor(prefix_random_tokens)
-            if prefix_filter(prefix_random_tokens, **filter_metadata):
+            if prefix_filter(prefix_random_tokens, **(filter_metadata or {})):
                 break
         
         while True:
@@ -522,7 +522,7 @@ def initialize_adversarial_strings(tokenizer: transformers.AutoTokenizer, init_c
                 rand_token = random.randint(0, tokenizer.vocab_size)
                 suffix_random_tokens.append(rand_token)
             suffix_random_tokens = torch.tensor(suffix_random_tokens)
-            if suffix_filter(suffix_random_tokens, **filter_metadata):
+            if suffix_filter(suffix_random_tokens, **(filter_metadata or {})):
                 break
         
         adv_prefix_init = tokenizer.decode(prefix_random_tokens)
@@ -676,7 +676,6 @@ def target_logprobs(
     **kwargs
 ):
     target_mask = masks_data["target_mask"]
-    
     losses_list = []
     for logit_piece in bulk_logits_iter(model, input_points):
         loss_tensor = UNREDUCED_CE_LOSS(torch.transpose(logit_piece[:, -(len(target_mask) + 1):- 1, :], 1, 2), target_tokens.repeat((logit_piece.shape[0], 1)).to(logit_piece.device)).sum(dim=1)
@@ -733,94 +732,157 @@ def generate_valid_input_tokenized_data(
     logger.log(new_init_config, num_init_tries=num_init_tries)
     return input_tokenized_data, new_init_config
 
-def create_static_cache_for_prefix(
-    model: transformers.AutoModelForCausalLM,
-    prefix_input_ids: torch.tensor,
-    max_cache_len: int = 128
-) -> transformers.StaticCache:
-    """
-    Create a static cache for a given prefix
-    """
-
-    if prefix_input_ids.dim() == 1:
-        prefix_input_ids = torch.unsqueeze(prefix_input_ids, dim=0)
-
-    # Create a StaticCache with predefined max length
-    cache = transformers.StaticCache(
-        config=model.config,
-        max_batch_size=1,  # Adjust based on your needs
-        max_cache_len=max_cache_len,
-        dtype=torch.float16 if model.dtype == torch.float16 else torch.float32
-    )
-    
-    with torch.no_grad():
-        # Run the prefix through the model to populate the cache
-        model(
-            input_ids=prefix_input_ids.to(model.device),
-            past_key_values=cache,
-            use_cache=True
-        )    
-    return cache
-
-def clone_cache_efficiently(cache):
-    """
-    Create an efficient clone of a cache using tensor.clone()
-    """
-        # For newer StaticCache/DynamicCache objects
-    new_cache = type(cache)(
-        config=cache.config,
-        max_batch_size=cache.batch_size,
-        max_cache_len=cache.max_cache_len,
-        dtype=cache.key_cache[0].dtype
-    )
-    new_cache.key_cache = [k.clone() for k in cache.key_cache]
-    new_cache.value_cache = [v.clone() for v in cache.value_cache]
-    return new_cache
-
-
-def expand_cache_for_batch(cache, target_batch_size):
-    """
-    Expand a cache created with batch_size=1 to support a larger batch size.
-    
-    Args:
-        cache: The StaticCache object to expand
-        target_batch_size: The desired batch size
-    
-    Returns:
-        The expanded cache
-    """
-    # Skip if the cache is already the right size
-    if cache.batch_size >= target_batch_size:
-        return cache
-    
-    # Create new tensors with expanded batch dimension
-    for layer_idx in range(len(cache.key_cache)):
-        # Get current dimensions
-        current_shape = cache.key_cache[layer_idx].shape
-        
-        # Create expanded tensors
-        # Shape is typically [batch_size, num_heads, seq_len, head_dim]
-        expanded_key = cache.key_cache[layer_idx].expand(
-            target_batch_size, *current_shape[1:]
-        ).clone()  # Clone to make it writable
-        
-        expanded_value = cache.value_cache[layer_idx].expand(
-            target_batch_size, *current_shape[1:]
-        ).clone()  # Clone to make it writable
-        
-        # Replace the original tensors
-        cache.key_cache[layer_idx] = expanded_key
-        cache.value_cache[layer_idx] = expanded_value
-    
-    # Update the cache's batch size property if it exists
-    if hasattr(cache, 'batch_size'):
-        cache.batch_size = target_batch_size
-    
-    return cache
-
-
 def _get_layer_obj(model):
     if isinstance(model, peft.PeftModel):
         return model.base_model.model.model.layers
     elif isinstance(model, transformers.LlamaPreTrainedModel):
         return model.model.layers
+
+GLOBAL_CACHE_OBJECT = None
+def setup_caches(model, tokenizer, input_points, masks_data, logger):
+    if GLOBAL_CACHE_OBJECT is not None:
+        return GLOBAL_CACHE_OBJECT
+    
+    tokens = input_points
+    optim_mask = masks_data["optim_mask"]
+    static_index = min(optim_mask) - 1
+    static_tokens = tokens[:static_index]
+    past_key_values = model(input_ids=torch.unsqueeze(static_tokens, dim=0), use_cache=True).past_key_values
+    GLOBAL_CACHE_OBJECT = {
+        "past_key_values": past_key_values.to_legacy_cache(),
+        "static_index": static_index
+    }
+    return GLOBAL_CACHE_OBJECT
+
+def reset_caches():
+    global GLOBAL_CACHE_OBJECT
+    GLOBAL_CACHE_OBJECT = None
+    gc.collect()
+    torch.cuda.empty_cache()
+
+DEFAULT_MAXIMUM_BATCH_SIZE = 512
+def get_logits_batch_size_cached(model, tokenizer, input_tokenized_data, logger):
+    cache_object = setup_caches(model, tokenizer, input_tokenized_data, logger)
+    past_key_values_true = cache_object["past_key_values"]
+    static_index_true = cache_object["static_index"]
+    tokens = input_tokenized_data["tokens"]
+    batch_size = DEFAULT_MAXIMUM_BATCH_SIZE
+    with torch.no_grad():
+        while batch_size > 1:
+            
+            input_ids_sliced_batch = torch.unsqueeze(tokens, dim=0).expand(batch_size, -1)[:, static_index_true:]
+            
+            batched_kv_cache = []
+            for keys_cached, values_cached in past_key_values_true:
+                keys_cached_new = keys_cached.expand(batch_size, -1, -1)
+                values_cached_new = values_cached.expand(batch_size, -1, -1)
+                batched_kv_cache.append((keys_cached_new, values_cached_new))
+            try:
+                logits = model(
+                    input_ids = input_ids_sliced_batch.to(model.device),
+                    past_key_values = transformers.DynamicCache.from_legacy_cache(batched_kv_cache)
+                ).logits
+                global GLOBAL_CACHE_OBJECT
+                GLOBAL_CACHE_OBJECT["past_key_values_batched"] = batched_kv_cache
+                break
+            except torch.cuda.OutOfMemoryError:
+                batch_size /= 2
+    return batch_size
+
+class CachedTargetLogprobs:
+
+    def _cache_init(self, model, tokenizer, input_tokenized_data):
+        if self.to_cache:
+            tokens = input_tokenized_data["tokens"]
+            masks_data = input_tokenized_data["masks"]
+            optim_mask = masks_data["optim_mask"]
+            static_index = min(optim_mask) - 1
+            static_tokens = tokens[:static_index]
+            past_key_values = model(input_ids=torch.unsqueeze(static_tokens, dim=0).to(model.device), use_cache=True).past_key_values
+            self.cache_object = {
+                "past_key_values": past_key_values,
+                "static_index": static_index
+            }
+        else:
+            self.cache_object = None
+
+    def _batch_size_init(self, model, tokenizer, input_tokenized_data):
+        tokens = input_tokenized_data["tokens"]
+        batch_size = DEFAULT_MAXIMUM_BATCH_SIZE
+        with torch.no_grad():
+            if self.to_cache:
+                past_key_values_true = self.cache_object["past_key_values"]
+                static_index_true = self.cache_object["static_index"]
+
+                while batch_size > 1:
+                    input_ids_sliced_batch = torch.unsqueeze(tokens, dim=0).expand(batch_size, -1)[:, static_index_true:]
+                    batched_kv_cache = []
+                    for keys_cached, values_cached in past_key_values_true:
+                        keys_cached_new = keys_cached.expand(batch_size, -1, -1, -1)
+                        values_cached_new = values_cached.expand(batch_size, -1, -1, -1)
+                        batched_kv_cache.append((keys_cached_new, values_cached_new))
+                    try:
+                        _ = model(
+                            input_ids = input_ids_sliced_batch.to(model.device),
+                            past_key_values = transformers.DynamicCache.from_legacy_cache(batched_kv_cache)
+                        ).logits
+                        self.batch_size = batch_size
+                        break
+                    except torch.cuda.OutOfMemoryError:
+                        batch_size /= 2
+
+            while batch_size > 1:
+                input_ids_sliced_batch = torch.unsqueeze(tokens, dim=0).expand(batch_size, -1)
+                try:
+                    _ = model(
+                        input_ids = input_ids_sliced_batch.to(model.device),
+                    ).logits
+                    self.uncached_batch_size = batch_size
+                    break
+                except torch.cuda.OutOfMemoryError:
+                    batch_size /= 2
+
+    def __init__(self, to_cache=True):
+        self.to_cache = to_cache
+        self.is_inited = False
+        self.cache_object = None
+        self.uncached_batch_size = None
+        self.batch_size = None
+
+    def __call__(self, model, tokenizer, input_points, masks_data, target_tokens, logger, **kwargs):
+
+        if not self.is_inited:
+            input_tokenized_data = {
+                "tokens": input_points[0],
+                "masks": masks_data
+            }
+            self._cache_init(model, tokenizer, input_tokenized_data)
+            self._batch_size_init(model, tokenizer, input_tokenized_data)
+            self.is_inited = True
+        
+        if self.to_cache:
+            input_points_sliced = input_points[:, self.cache_object["static_index"]:]
+            target_mask = masks_data["target_mask"]
+            data_split = torch.split(input_points_sliced, self.batch_size, dim=0)
+            losses_list = []
+            for data_batch in data_split:
+                new_legacy_cache = []
+                for key_cache, value_cache in self.cache_object["past_key_values"]:
+                    new_legacy_cache.append((key_cache.expand(data_batch.shape[0], -1, -1, -1).clone(), value_cache.expand(data_batch.shape[0], -1, -1, -1).clone()))
+                logit_piece = model(input_ids=data_batch.to(model.device), past_key_values=transformers.DynamicCache.from_legacy_cache(new_legacy_cache)).logits
+                loss_tensor = UNREDUCED_CE_LOSS(torch.transpose(logit_piece[:, -(len(target_mask) + 1):- 1, :], 1, 2), target_tokens.repeat((logit_piece.shape[0], 1)).to(logit_piece.device)).sum(dim=1)
+                losses_list.append(loss_tensor)
+            losses_tensor = torch.cat(losses_list)
+            return losses_tensor
+        else:
+            target_mask = masks_data["target_mask"]
+            data_split = torch.split(input_points, self.uncached_batch_size, dim=0)
+            losses_list = []
+            for data_batch in data_split:
+                logit_piece = model(input_ids=data_batch.to(model.device)).logits
+                loss_tensor = UNREDUCED_CE_LOSS(torch.transpose(logit_piece[:, -(len(target_mask) + 1):- 1, :], 1, 2), target_tokens.repeat((logit_piece.shape[0], 1)).to(logit_piece.device)).sum(dim=1)
+                losses_list.append(loss_tensor)
+            losses_tensor = torch.cat(losses_list)
+            return losses_tensor
+
+# target_logprobs = CachedTargetLogprobs(to_cache=False)

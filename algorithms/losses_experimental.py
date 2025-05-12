@@ -242,8 +242,9 @@ def smart_layer_weight_strategy(
     tokenizer,
     layer_weight_strategy,
     ideal_attentions,
-    input_points = None,
-    masks_data = None,
+    input_points,
+    masks_data,
+    logger,
     **kwargs
 ):
     assert isinstance(ideal_attentions, torch.Tensor) and ideal_attentions.dim() == 5 # (layer, batch, attention head, row, column)
@@ -264,7 +265,7 @@ def smart_layer_weight_strategy(
         assert layer_weight_strategy.shape == ideal_attentions.shape[:-1]
         pass
     elif callable(layer_weight_strategy): # This is the fine-grained case where we do more detailed stuff, hopefully we never need this
-        layer_weight_strategy = layer_weight_strategy(model, tokenizer, input_points, masks_data, **kwargs)
+        layer_weight_strategy = layer_weight_strategy(model, tokenizer, input_points, masks_data, logger, **kwargs)
 
     assert isinstance(layer_weight_strategy, torch.Tensor) and layer_weight_strategy.dim() == 4 and layer_weight_strategy.shape == ideal_attentions.shape[:-1]
     
@@ -300,7 +301,7 @@ def attention_metricized_signal_v2(
     ideal_attention_kwargs = kwargs.get("ideal_attentions_kwargs", {})
     ideal_attentions = smart_ideal_attentions(model, tokenizer, ideal_attentions, input_points, masks_data, **ideal_attention_kwargs)
 
-    layer_weight_strategy = smart_layer_weight_strategy(model, tokenizer, layer_weight_strategy, ideal_attentions, input_points, masks_data)
+    layer_weight_strategy = smart_layer_weight_strategy(model, tokenizer, layer_weight_strategy, ideal_attentions, input_points, masks_data, logger)
 
     optim_mask: torch.tensor = masks_data["optim_mask"]
     target_mask: torch.tensor = masks_data["target_mask"]
@@ -334,7 +335,7 @@ def attention_metricized_v2_true_loss(
     input_points_to_send = input_points
 
     ideal_attentions = smart_ideal_attentions(model, tokenizer, ideal_attentions, input_points_to_send, masks_data, **ideal_attention_kwargs)
-    layer_weight_strategy = smart_layer_weight_strategy(model, tokenizer, layer_weight_strategy, ideal_attentions, input_points, masks_data)
+    layer_weight_strategy = smart_layer_weight_strategy(model, tokenizer, layer_weight_strategy, ideal_attentions, input_points, masks_data, logger)
 
     target_mask: torch.tensor = masks_data["target_mask"]
     loss_tensors_list = []
@@ -489,7 +490,7 @@ def get_dolly_data(tokenizer, input_tokenized_data, logger):
 
     tokens = input_tokenized_data["tokens"]
     masks_data = input_tokenized_data["masks"]
-    target = tokenizer.decode(tokens[masks_data["target_mask"]], clean_up_tokenization_spaces=False)
+    target = tokenizer.decode(tokens[0][masks_data["target_mask"]], clean_up_tokenization_spaces=False)
 
     prefix_length = len(masks_data["prefix_mask"])
     suffix_length = len(masks_data["suffix_mask"])
@@ -571,7 +572,9 @@ class SingleAttentionGradHook:
             for i in range(self.num_layers):
                 if self.attention_weights[i] is not None and hasattr(self.attention_weights[i], 'grad'):
                     self.attention_grads[i] = self.attention_weights[i].grad.detach().to("cpu")
-    
+            # self.attention_grads[i] is the gradient wrt the attention matrix i
+            # self.attention_grads[i] is of shape (batch size (always 1), num_heads, context_length, context_length)
+
 class MultiAttentionGradHook:
     def __init__(self, model, input_tokenized_data_list):
         self.model = model
@@ -638,26 +641,38 @@ def attention_heads_across_training_examples(model, tokenizer, dolly_full_data, 
     dolly_relevant_examples = random.sample(dolly_full_data, num_examples)    
 
     per_example_output_means = []
-    per_example_output_stds = []
     for example, relevant_example in enumerate(dolly_relevant_examples):
         random_perturbs = generate_random_inits_for_one_example(model, tokenizer, relevant_example, num_randoms_per_example)
         mgh = MultiAttentionGradHook(model, random_perturbs)
         mgh.accumulate_gradients()
-        output_mean, output_std = mgh.layer_wise_abs_grads()
+        output_mean = mgh.layer_wise_abs_grads()
         per_example_output_means.append(output_mean)
-        per_example_output_stds.append(output_std)
         gc.collect()
         torch.cuda.empty_cache()
-    return per_example_output_means, per_example_output_stds
+    return per_example_output_means
 
 def abs_grad_dolly_layer_weights(model, tokenizer, input_tokenized_data, logger):
     dolly_convolved_dataset, _ = get_dolly_data(tokenizer, input_tokenized_data, logger)
-    means, stds = attention_heads_across_training_examples(model, tokenizer, dolly_convolved_dataset, 100, 20)
+    means = attention_heads_across_training_examples(model, tokenizer, dolly_convolved_dataset, 5, 5)
     example_mean_all = []
-    example_std_all = []
-    for example_num, (example_output_mean, example_output_std) in enumerate(zip(means, stds)):
+    for example_num, example_output_mean in enumerate(means):
         example_mean_all.append(torch.stack(example_output_mean))
-        example_std_all.append(torch.stack(example_output_std))
 
     final_mean = torch.mean(torch.stack(example_mean_all), dim=0)
     return final_mean
+
+
+CACHED_DOLLY_LAYER_WEIGHT_OBJ = None
+def cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, masks_data, logger):
+    global CACHED_DOLLY_LAYER_WEIGHT_OBJ
+    if CACHED_DOLLY_LAYER_WEIGHT_OBJ is None:
+        input_tokenized_data = {
+            "tokens": input_points,
+            "masks": masks_data
+        }
+        CACHED_DOLLY_LAYER_WEIGHT_OBJ = abs_grad_dolly_layer_weights(model, tokenizer, input_tokenized_data, logger)
+    if input_points.dim() == 0:
+        input_points = torch.unsqueeze(input_points, dim=0)
+    batch_size = input_points.shape[0]
+    final_tensor = torch.transpose(torch.unsqueeze(CACHED_DOLLY_LAYER_WEIGHT_OBJ, dim=0).expand(batch_size, -1, -1).unsqueeze(dim=-1).expand(-1, -1, -1, len(masks_data["target_mask"])), 0, 1)
+    return final_tensor

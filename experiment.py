@@ -175,13 +175,13 @@ def attack_secalign_model(
             },
             {
                 "role": input_conv[1]["role"],
-                "content": input_conv[1]["content"] + " " + attack_utility.ADV_PREFIX_INDICATOR + " " +  secalign.SECALIGN_COMMON_INSTRUCTION  + attack_utility.ADV_SUFFIX_INDICATOR
+                "content": input_conv[1]["content"] + " " + attack_utility.ADV_PREFIX_INDICATOR + " " +  secalign.SECALIGN_COMMON_INSTRUCTION  + " " + attack_utility.ADV_SUFFIX_INDICATOR
             }
         ]
 
     initial_config = {
         "strategy_type": "random",
-        "prefix_length": 0,
+        "prefix_length": 5,
         "suffix_length": 20,
         "prefix_filter": secalign.secalign_filter,
         "suffix_filter": secalign.secalign_filter,
@@ -193,36 +193,29 @@ def attack_secalign_model(
     input_tokenized_data, true_init_config = attack_utility.generate_valid_input_tokenized_data(tokenizer, input_conv, target, initial_config, logger)
     logger.log(true_init_config)
 
-    custom_gcg_hyperparameters_1 = {
-        "signal_function": gcg.og_gcg_signal,
-        "true_loss_function": attack_utility.target_logprobs,
-        "max_steps": 500,
-        "topk": 256,
-        "forward_eval_candidates": 512,
-        "substitution_validity_function": secalign.secalign_filter
-    }
-    adversarial_parameters_dict_1 = {
-        "input_tokenized_data": input_tokenized_data,
-        "attack_algorithm": "custom_gcg",
-        "attack_hyperparameters": custom_gcg_hyperparameters_1,
-        "early_stop": False,
-        "eval_every_step": False
-    }
+    # custom_gcg_hyperparameters_1 = {
+    #     "signal_function": gcg.og_gcg_signal,
+    #     "true_loss_function": attack_utility.target_logprobs,
+    #     "max_steps": 500,
+    #     "topk": 256,
+    #     "forward_eval_candidates": 512,
+    #     "substitution_validity_function": secalign.secalign_filter
+    # }
+    # adversarial_parameters_dict_1 = {
+    #     "input_tokenized_data": input_tokenized_data,
+    #     "attack_algorithm": "custom_gcg",
+    #     "attack_hyperparameters": custom_gcg_hyperparameters_1,
+    #     "early_stop": False,
+    #     "eval_every_step": False
+    # }
 
-    logger.log(adversarial_parameters_dict_1)
-    loss_sequences_control, best_output_sequences_control = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, adversarial_parameters_dict_1, logger)
-    logger.log(loss_sequences_control)
-    logger.log(best_output_sequences_control)
+    # logger.log(adversarial_parameters_dict_1)
+    # loss_sequences_control, best_output_sequences_control = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, adversarial_parameters_dict_1, logger)
+    # logger.log(loss_sequences_control)
+    # logger.log(best_output_sequences_control)
 
-    final_inputs_strings_control = tokenizer.batch_decode(best_output_sequences_control, clean_up_tokenization_spaces=False)
-    final_inputs_dicts_control = [
-        {
-            "instruction": x.split(f"\n\n{data_delm}\n")[0].split(f"{inst_delm}\n")[-1],
-            "input": x.split(f"\n\n{data_delm}\n")[-1].split(f"\n\n{resp_delm}\n")[0]
-        }
-        for x in final_inputs_strings_control
-    ]
-    logger.log(final_inputs_dicts_control)
+    # final_inputs_strings_control = tokenizer.batch_decode(best_output_sequences_control, clean_up_tokenization_spaces=False)
+    # logger.log(final_inputs_strings_control)
 
     adversarial_parameters_dict_2 = {
         "input_tokenized_data": input_tokenized_data,
@@ -239,7 +232,8 @@ def attack_secalign_model(
                         "ideal_attentions": losses_experimental.uniform_ideal_attentions,
                         "ideal_attentions_kwargs": {
                             "attention_mask_strategy": "payload_only"
-                        }
+                        },
+                        "layer_weight_strategy": losses_experimental.cached_abs_grad_dolly_layer_weights
                     },
                     "true_loss_function": losses_experimental.attention_metricized_v2_true_loss,
                     "true_loss_kwargs": {
@@ -249,9 +243,10 @@ def attack_secalign_model(
                         "ideal_attentions": losses_experimental.uniform_ideal_attentions,
                         "ideal_attentions_kwargs": {
                             "attention_mask_strategy": "payload_only"
-                        }
+                        },
+                        "layer_weight_strategy": losses_experimental.cached_abs_grad_dolly_layer_weights
                     },
-                    "max_steps": 350,
+                    "max_steps": 5,
                     "topk": 256,
                     "forward_eval_candidates": 512,
                     "substitution_validity_function": secalign.secalign_filter,
@@ -262,7 +257,7 @@ def attack_secalign_model(
                 "attack_hyperparameters": {
                     "signal_function": gcg.og_gcg_signal,
                     "true_loss_function": attack_utility.target_logprobs,
-                    "max_steps": 150,
+                    "max_steps": 1,
                     "topk": 256,
                     "forward_eval_candidates": 512,
                     "substitution_validity_function": secalign.secalign_filter
@@ -278,14 +273,7 @@ def attack_secalign_model(
     logger.log(best_output_sequences_real)
 
     final_inputs_strings_real = tokenizer.batch_decode(best_output_sequences_real, clean_up_tokenization_spaces=False)
-    final_inputs_dicts_real = [
-        {
-            "instruction": x.split(f"\n\n{data_delm}\n")[0].split(f"{inst_delm}\n")[-1],
-            "input": x.split(f"\n\n{data_delm}\n")[-1].split(f"\n\n{resp_delm}\n")[0]
-        }
-        for x in final_inputs_strings_real
-    ]
-    logger.log(final_inputs_dicts_real)
+    logger.log(final_inputs_strings_real)
 
 def run_secalign_eval_on_single_gpu(expt_folder_prefix: str, self_device_idx, example_targets, **kwargs):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(self_device_idx)
@@ -311,7 +299,7 @@ def run_secalign_eval_on_single_gpu(expt_folder_prefix: str, self_device_idx, ex
             "input_conv": example_target,
             "target": secalign.SECALIGN_HARD_TARGETS[0]
         }
-        attack_secalign_model(example_target, model, tokenizer, frontend_delimiters, logger, convert_to_secalign_format=True)
+        attack_secalign_model(example_target, model, tokenizer, frontend_delimiters, logger, convert_to_secalign_format=False)
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -356,10 +344,10 @@ if __name__ == "__main__":
             }
         ]
         for x in alpacaeval
-    ][104:]
+    ][5:]
 
     if args.multiprocess:
-        EXPT_FOLDER_PREFIX = "logs/serious_attack_5"
+        EXPT_FOLDER_PREFIX = "logs/debug_logs"
         os.makedirs(EXPT_FOLDER_PREFIX, exist_ok=True)
         gpu_ids = list(range(torch.cuda.device_count()))
         NUM_EXPERIMENTS_ON_GPU = len(alpacaeval_convs_raw) // len(gpu_ids)
@@ -368,5 +356,5 @@ if __name__ == "__main__":
         with multiprocessing.Pool(len(gpu_ids)) as process_pool:
             final_results = process_pool.starmap(run_secalign_eval_on_single_gpu, [(EXPT_FOLDER_PREFIX, i, alpacaeval_batched[i]) for i in gpu_ids])
     else:
-        EXPT_FOLDER_PREFIX = "logs/random_init_0_20_2"
+        EXPT_FOLDER_PREFIX = "logs/debug_logs"
         final_results = run_secalign_eval_on_single_gpu(EXPT_FOLDER_PREFIX, args.device, alpacaeval_convs_raw)
