@@ -671,7 +671,7 @@ def cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, masks_da
             "masks": masks_data
         }
         CACHED_DOLLY_LAYER_WEIGHT_OBJ = abs_grad_dolly_layer_weights(model, tokenizer, input_tokenized_data, logger)
-    if input_points.dim() == 0:
+    if input_points.dim() == 1:
         input_points = torch.unsqueeze(input_points, dim=0)
     batch_size = input_points.shape[0]
     final_tensor = torch.transpose(torch.unsqueeze(CACHED_DOLLY_LAYER_WEIGHT_OBJ, dim=0).expand(batch_size, -1, -1).unsqueeze(dim=-1).expand(-1, -1, -1, len(masks_data["target_mask"])), 0, 1)
