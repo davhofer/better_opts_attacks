@@ -165,10 +165,21 @@ def custom_gcg(
     eval_initial,
     identical_outputs_before_stop,
     generation_config,
-    use_kv_caching = True
+    to_cache_logits,
+    to_cache_attentions
 ):
 
     logger.log(input_tokenized_data)
+
+    if to_cache_logits:
+        target_logprobs = attack_utility.CachedTargetLogprobs(to_cache=True)
+    else:
+        target_logprobs = attack_utility.target_logprobs
+
+    if to_cache_attentions:
+        att_cacher = attack_utility.CachedBulkForward(to_cache=True)
+    else:
+        att_cacher = None
 
     input_tokens: torch.tensor = input_tokenized_data["tokens"]
     masks_data = input_tokenized_data["masks"]
@@ -177,7 +188,7 @@ def custom_gcg(
     eval_input_mask: torch.tensor = masks_data["input_mask"]
 
     signal_function = custom_gcg_hyperparams.get("signal_function", og_gcg_signal)
-    true_loss_function = custom_gcg_hyperparams.get("true_loss_function", attack_utility.target_logprobs)
+    true_loss_function = custom_gcg_hyperparams.get("true_loss_function", target_logprobs)
     substitution_validity_function = custom_gcg_hyperparams.get("substitution_validity_function", None)
     signal_kwargs = custom_gcg_hyperparams.get("signal_kwargs", None)
     true_loss_kwargs = custom_gcg_hyperparams.get("true_loss_kwargs", None)
@@ -187,12 +198,15 @@ def custom_gcg(
     logprobs_sequences = []
     successive_correct_outputs = 0
 
+    if true_loss_kwargs is None:
+        true_loss_kwargs = {}
+    true_loss_kwargs["att_cacher"] = att_cacher
     if eval_initial:
-        initial_true_loss = true_loss_function(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger, **(true_loss_kwargs or {}))
+        initial_true_loss = true_loss_function(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger, **true_loss_kwargs)
         logger.log(initial_true_loss, step_num=-1)
         best_output_sequences.append(current_best_tokens.clone())
         logger.log(current_best_tokens, step_num=-1)
-        initial_logprobs = attack_utility.target_logprobs(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger)
+        initial_logprobs = target_logprobs(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger)
         initial_logprobs = initial_logprobs.item()
         logger.log(initial_logprobs, step_num=-1)
         logprobs_sequences.append(initial_logprobs)
@@ -253,18 +267,19 @@ def custom_gcg(
         torch.cuda.empty_cache()
         substitution_data_chunk.append(substitution_data)
         
-        true_losses = true_loss_function(model, tokenizer, substitution_data, masks_data, input_tokens[target_mask], logger, **(true_loss_kwargs or {}))
+
+        true_losses = true_loss_function(model, tokenizer, substitution_data, masks_data, input_tokens[target_mask], logger, **true_loss_kwargs)
         true_losses_chunk.append(true_losses)
         current_best_true_loss = true_losses[torch.argmin(true_losses)]
         current_best_true_loss_chunk.append(current_best_true_loss)
         current_best_tokens = substitution_data[torch.argmin(true_losses)].clone()
         current_best_tokens_chunk.append(current_best_tokens)
         best_output_sequences.append(current_best_tokens.clone())
+        logprobs = target_logprobs(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger)
+        logprobs = logprobs.item()
+        logprobs_chunk.append(logprobs)
+        logprobs_sequences.append(logprobs)        
         if eval_every_step:
-            logprobs = attack_utility.target_logprobs(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger)
-            logprobs = logprobs.item()
-            logprobs_chunk.append(logprobs)
-            logprobs_sequences.append(logprobs)
             generated_output_tokens = model.generate(torch.unsqueeze(current_best_tokens[eval_input_mask], dim=0).to(model.device), attention_mask=torch.unsqueeze(torch.ones(current_best_tokens[eval_input_mask].shape), dim=0).to(model.device), **generation_config)
             generated_output_string = tokenizer.batch_decode(generated_output_tokens[:, eval_input_mask[-1] + 1 :])[0]
             generated_output_string_chunk.append(generated_output_string)

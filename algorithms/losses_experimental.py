@@ -2,9 +2,17 @@ import torch
 import transformers
 import gc
 import typing
+import peft
+import datasets
+import random
+import copy
+import sys
+import time
 
 import utils.attack_utility as attack_utility
 import utils.experiment_logger as experiment_logger
+from secalign_refactored import secalign
+
 
 def process_batch_attentions(
     model: transformers.AutoModelForCausalLM,
@@ -234,8 +242,9 @@ def smart_layer_weight_strategy(
     tokenizer,
     layer_weight_strategy,
     ideal_attentions,
-    input_points = None,
-    masks_data = None,
+    input_points,
+    masks_data,
+    logger,
     **kwargs
 ):
     assert isinstance(ideal_attentions, torch.Tensor) and ideal_attentions.dim() == 5 # (layer, batch, attention head, row, column)
@@ -256,7 +265,7 @@ def smart_layer_weight_strategy(
         assert layer_weight_strategy.shape == ideal_attentions.shape[:-1]
         pass
     elif callable(layer_weight_strategy): # This is the fine-grained case where we do more detailed stuff, hopefully we never need this
-        layer_weight_strategy = layer_weight_strategy(model, tokenizer, input_points, masks_data, **kwargs)
+        layer_weight_strategy = layer_weight_strategy(model, tokenizer, input_points, masks_data, logger, **kwargs)
 
     assert isinstance(layer_weight_strategy, torch.Tensor) and layer_weight_strategy.dim() == 4 and layer_weight_strategy.shape == ideal_attentions.shape[:-1]
     
@@ -292,7 +301,7 @@ def attention_metricized_signal_v2(
     ideal_attention_kwargs = kwargs.get("ideal_attentions_kwargs", {})
     ideal_attentions = smart_ideal_attentions(model, tokenizer, ideal_attentions, input_points, masks_data, **ideal_attention_kwargs)
 
-    layer_weight_strategy = smart_layer_weight_strategy(model, tokenizer, layer_weight_strategy, ideal_attentions, input_points, masks_data)
+    layer_weight_strategy = smart_layer_weight_strategy(model, tokenizer, layer_weight_strategy, ideal_attentions, input_points, masks_data, logger)
 
     optim_mask: torch.tensor = masks_data["optim_mask"]
     target_mask: torch.tensor = masks_data["target_mask"]
@@ -323,23 +332,32 @@ def attention_metricized_v2_true_loss(
     **kwargs
 ):
     ideal_attention_kwargs = kwargs.get("ideal_attentions_kwargs", {})
-    input_points_to_send = input_points
+    att_cacher = kwargs.get("att_cacher", None)
 
-    ideal_attentions = smart_ideal_attentions(model, tokenizer, ideal_attentions, input_points_to_send, masks_data, **ideal_attention_kwargs)
-    layer_weight_strategy = smart_layer_weight_strategy(model, tokenizer, layer_weight_strategy, ideal_attentions, input_points, masks_data)
+    ideal_attentions = smart_ideal_attentions(model, tokenizer, ideal_attentions, input_points, masks_data, **ideal_attention_kwargs)
+    layer_weight_strategy = smart_layer_weight_strategy(model, tokenizer, layer_weight_strategy, ideal_attentions, input_points, masks_data, logger)
 
     target_mask: torch.tensor = masks_data["target_mask"]
     loss_tensors_list = []
     num_processed = 0
-    for batch_logits, batch_true_attentions in attack_utility.bulk_forward_iter(model, input_points_to_send):
-        true_attentions = torch.stack([attention[:, :, -(len(target_mask) + 1):- 1, :] for attention in batch_true_attentions])
-        loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions[:, num_processed:num_processed + true_attentions.shape[1], ...], true_attentions, logger=logger, layer_weight_strategy=layer_weight_strategy[:, num_processed:num_processed + true_attentions.shape[1], ...])
-        num_processed += true_attentions.shape[1]
-        loss_tensors_list.append(loss_tensor)
-    
+    with torch.no_grad():
+        if att_cacher is None:
+            for batch_logits, batch_true_attentions in attack_utility.bulk_forward_iter(model, input_points):
+                true_attentions = torch.stack([attention[:, :, -(len(target_mask) + 1):- 1, :] for attention in batch_true_attentions])
+                loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions[:, num_processed:num_processed + true_attentions.shape[1], ...], true_attentions, logger=logger, layer_weight_strategy=layer_weight_strategy[:, num_processed:num_processed + true_attentions.shape[1], ...])
+                num_processed += true_attentions.shape[1]
+                loss_tensors_list.append(loss_tensor)
+        else:
+            for batch_logits, batch_true_attentions in att_cacher(model, tokenizer, input_points, masks_data, logger):
+                true_attentions = torch.stack([attention[:, :, -(len(target_mask) + 1):- 1, :] for attention in batch_true_attentions])
+                loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions[:, num_processed:num_processed + true_attentions.shape[1], ...], true_attentions, logger=logger, layer_weight_strategy=layer_weight_strategy[:, num_processed:num_processed + true_attentions.shape[1], ...])
+                num_processed += true_attentions.shape[1]
+                loss_tensors_list.append(loss_tensor) 
+                del batch_true_attentions, true_attentions
+                gc.collect()
+                torch.cuda.empty_cache()   
     loss_tensor = torch.cat(loss_tensors_list)
     return loss_tensor
-
 
 def kl_divergence_payload_only(
     model,
@@ -410,3 +428,261 @@ def pointwise_sum_of_differences_payload_only(
     product = batch_first_att_strategy.to(batch_first_losses.device) * batch_first_losses
     result = product.sum(dim=(1, 2, 3))
     return result
+
+
+def secalign_ideal_attention_v1(
+    model,
+    tokenizer,
+    input_points,
+    masks_data,
+    *,
+    attention_mask_strategy,
+    **kwargs
+):
+    if input_points.dim() == 1:
+        input_points = torch.unsqueeze(input_points, dim=0)
+    
+    payload_mask: torch.Tensor = masks_data["payload_mask"]
+    control_mask: torch.Tensor = masks_data["control_mask"]
+    target_mask: torch.Tensor = masks_data["target_mask"]
+
+    if attention_mask_strategy == "payload_only":
+        attention_mask = payload_mask
+        attention_mask_formatted = torch.zeros(input_points.shape)
+        attention_mask_formatted[:, attention_mask] = 1
+        attentions = model(input_ids=input_points.to(model.device), attention_mask=attention_mask_formatted.to(model.device), output_attentions=True).attentions
+    elif attention_mask_strategy == "payload_and_control":
+        attention_mask = torch.cat((payload_mask, control_mask))
+        attention_mask_formatted = torch.zeros(input_points.shape)
+        attention_mask_formatted[:, attention_mask] = 1
+        attentions = model(input_ids=input_points.to(model.device), attention_mask=attention_mask_formatted.to(model.device), output_attentions=True).attentions
+    # Removing these two, because it might be that we can emulate the squeezed
+    # versions with just modifying position_ids???
+    # 
+    # elif attention_mask_strategy == "payload_control_squeezed":
+    #     attention_mask = torch.cat((payload_mask, control_mask))
+    #     attentions = model(input_ids=input_points[:, sorted(attention_mask)], output_attentions=True).attentions
+    # elif attention_mask_strategy == "payload_squeezed":
+    #     attention_mask = payload_mask
+    #     attentions = model(input_ids=input_points[:, sorted(attention_mask)], output_attentions=True).attentions
+    else:
+        raise ValueError(f"attention_mask_strategy {attention_mask_strategy} is not implemented yet.")
+    return torch.stack(attentions)[:, :, :, target_mask - 1, :]
+
+def uniform_ideal_attentions(
+    model,
+    tokenizer,
+    input_points,
+    masks_data,
+    *,
+    attention_mask_strategy,
+):
+    if input_points.dim() == 1:
+        input_points = torch.unsqueeze(input_points, dim=0)
+    payload_mask: torch.Tensor = masks_data["payload_mask"]
+    target_mask: torch.Tensor = masks_data["target_mask"]
+    if attention_mask_strategy == "payload_only":
+        attention_mask = payload_mask
+    elif attention_mask_strategy == "payload_and_control":
+        control_mask: torch.Tensor = masks_data["control_mask"]    
+        attention_mask = torch.cat((payload_mask, control_mask))
+    else:
+        raise ValueError(f"attention_mask_strategy {attention_mask_strategy} is not implemented yet.")
+    dummy_attentions = torch.stack(model(input_ids=torch.unsqueeze(input_points[0], dim=0).to(model.device), output_attentions=True).attentions)
+    ideal_shape = dummy_attentions.shape
+    ideal_shape = (ideal_shape[0], input_points.shape[0], ideal_shape[2], ideal_shape[3], ideal_shape[4])
+    attentions = torch.zeros(ideal_shape)
+    attentions[:, :, :, :, attention_mask] = 1 / len(attention_mask)
+    return attentions[:, :, :, -(len(target_mask) + 1):-1, :]
+
+
+def get_dolly_data(tokenizer, input_tokenized_data, logger):
+
+    tokens = input_tokenized_data["tokens"]
+    masks_data = input_tokenized_data["masks"]
+    target = tokenizer.decode(tokens[0][masks_data["target_mask"]], clean_up_tokenization_spaces=False)
+
+    prefix_length = len(masks_data["prefix_mask"])
+    suffix_length = len(masks_data["suffix_mask"])
+
+    init_config = {
+        "strategy_type": "random",
+        "prefix_length": prefix_length,
+        "suffix_length": suffix_length,
+        "seed": int(time.time())
+    }
+
+    assert (init_config is not None) and (target is not None)
+
+    dolly_15k_raw = datasets.load_dataset("databricks/databricks-dolly-15k")
+    dolly_15k_filtered = [x for x in dolly_15k_raw["train"] if (x["context"] != "" and x["instruction"] != "")]
+    dolly_data = [x for x in dolly_15k_filtered if len(x["context"]) <= 200 and len(x["instruction"]) < 300]
+    dolly_data = [
+        [
+            {
+                "role": "system",
+                "content": x["instruction"]
+            },
+            {
+                "role": "user",
+                "content": x["context"]
+            }
+        ]
+        for x in dolly_data
+    ]
+
+    random_input_conv = random.choice(dolly_data)
+    input_tokenized_data, true_init_config = attack_utility.generate_valid_input_tokenized_data(tokenizer, random_input_conv, target, init_config, logger)
+    true_prefix_tokens = input_tokenized_data["tokens"][input_tokenized_data["masks"]["prefix_mask"]]
+    true_suffix_tokens = input_tokenized_data["tokens"][input_tokenized_data["masks"]["suffix_mask"]]
+    new_dolly_data = []
+    for dolly_data_point in dolly_data:
+        current_input_tokenized_data, _ = attack_utility.generate_valid_input_tokenized_data(tokenizer, dolly_data_point, target, init_config, logger)
+        current_prefix_mask = current_input_tokenized_data["masks"]["prefix_mask"]
+        current_suffix_mask = current_input_tokenized_data["masks"]["suffix_mask"]
+        new_tokens = copy.deepcopy(current_input_tokenized_data["tokens"])
+        new_tokens[current_prefix_mask[-len(true_prefix_tokens):]] = true_prefix_tokens[-len(true_prefix_tokens):]
+        new_tokens[current_suffix_mask[:len(true_suffix_tokens)]] = true_suffix_tokens[:len(true_suffix_tokens)]
+        new_dolly_data.append(
+            {
+                "tokens": new_tokens,
+                "masks": current_input_tokenized_data["masks"]
+            }
+        )
+    return new_dolly_data, true_init_config
+
+class SingleAttentionGradHook:
+    def __init__(self, model, input_tokenized_data):
+        self.model = model
+        self.num_layers = len(attack_utility._get_layer_obj(model))
+        self.attention_weights = [None] * self.num_layers
+        self.attention_grads = [None] * self.num_layers
+        self.input_tokenized_data = input_tokenized_data
+        
+    def accumulate_grads(self):
+        self.model.train()
+        for param in self.model.parameters():
+            param.requires_grad = True
+        
+        with torch.enable_grad():
+            input_ids = self.input_tokenized_data["tokens"]
+            device = next(self.model.parameters()).device
+            input_tensor = torch.unsqueeze(input_ids.to(device), dim=0)
+            
+            outputs = self.model(input_ids=input_tensor, output_attentions=True)
+            for attn_weight in outputs.attentions:
+                attn_weight.retain_grad()
+            self.attention_weights = outputs.attentions
+
+            target_mask = self.input_tokenized_data["masks"]["target_mask"]
+            target_logits = outputs.logits[0, target_mask - 1, :]
+            true_labels = self.input_tokenized_data["tokens"][target_mask].to(device)
+            loss = torch.nn.CrossEntropyLoss()(target_logits, true_labels)                
+            loss.backward()
+            for i in range(self.num_layers):
+                if self.attention_weights[i] is not None and hasattr(self.attention_weights[i], 'grad'):
+                    self.attention_grads[i] = self.attention_weights[i].grad.detach().to("cpu")
+            # self.attention_grads[i] is the gradient wrt the attention matrix i
+            # self.attention_grads[i] is of shape (batch size (always 1), num_heads, context_length, context_length)
+
+class MultiAttentionGradHook:
+    def __init__(self, model, input_tokenized_data_list):
+        self.model = model
+        self.input_tokenized_data_list = input_tokenized_data_list
+        self.num_layers = len(attack_utility._get_layer_obj(model))
+        self.single_attention_grad_hooks_list = [SingleAttentionGradHook(model, x) for x in input_tokenized_data_list]
+        self.grads = [None] * len(self.single_attention_grad_hooks_list)
+        self.accumulated = False
+
+    def accumulate_gradients(self):
+        if self.accumulated:
+            raise ValueError(f"Don't call accumulate when already accumulated")
+        for i, attn_hook in enumerate(self.single_attention_grad_hooks_list):
+            attn_hook.accumulate_grads()
+            self.grads[i] = attn_hook.attention_grads
+            gc.collect()
+            torch.cuda.empty_cache()
+        self.accumulated = True
+        gc.collect()
+
+    def _are_we_same_example(self):
+        masks_data_list = []
+        non_optim_tokens_list = []
+        for input_tokenized_data in self.input_tokenized_data_list:
+            tokens = input_tokenized_data["tokens"]
+            optim_mask = input_tokenized_data["masks"]["optim_mask"]
+            non_optim_tokens = tokens[[i for i in range(len(tokens)) if i not in optim_mask]]
+            non_optim_tokens_list.append(non_optim_tokens)
+            masks_data_list.append(input_tokenized_data["masks"])
+        return (all([x.data.tolist() == non_optim_tokens_list[0].data.tolist() for x in non_optim_tokens_list])) and (all([x == masks_data_list[0] for x in masks_data_list]))
+
+    def layer_wise_abs_grads(self):
+        if not self._are_we_same_example():
+            raise ValueError("This only makes sense when the inputs are all of the same structure")
+        
+        if not self.accumulated:
+            self.accumulate_gradients()
+
+        target_mask = self.input_tokenized_data_list[0]["masks"]["target_mask"]
+        layer_wise_abs_grads_sums = []
+        for layer_idx in range(self.num_layers):
+            layer_wise_abs_grads_sums.append([])
+            for per_ex_grad_val in self.grads:
+                layer_wise_abs_grads_sums[layer_idx].append(torch.abs(per_ex_grad_val[layer_idx][0][:, target_mask - 1, :]).mean(dim=-1).sum(dim=-1))
+        layer_wise_abs_grads_means = [torch.mean(torch.stack(layer_wise_abs_grads_sums[layer_idx]), dim=0) for layer_idx in range(self.num_layers)]
+        return layer_wise_abs_grads_means
+
+def generate_random_inits_for_one_example(model, tokenizer, input_tokenized_data, num_randoms):
+    new_input_tokenized_data_list = []
+    for _ in range(num_randoms):
+        optim_mask = input_tokenized_data["masks"]["optim_mask"]
+        new_random = torch.randint_like(optim_mask, 0, tokenizer.vocab_size)
+        new_tokens = input_tokenized_data["tokens"]
+        new_tokens[optim_mask] = new_random
+        new_input_tokenized_data = {
+            "tokens": new_tokens,
+            "masks": input_tokenized_data["masks"]
+        }
+        new_input_tokenized_data_list.append(new_input_tokenized_data)
+    return new_input_tokenized_data_list
+
+def attention_heads_across_training_examples(model, tokenizer, dolly_full_data, num_examples, num_randoms_per_example):
+
+    dolly_relevant_examples = random.sample(dolly_full_data, num_examples)    
+
+    per_example_output_means = []
+    for example, relevant_example in enumerate(dolly_relevant_examples):
+        random_perturbs = generate_random_inits_for_one_example(model, tokenizer, relevant_example, num_randoms_per_example)
+        mgh = MultiAttentionGradHook(model, random_perturbs)
+        mgh.accumulate_gradients()
+        output_mean = mgh.layer_wise_abs_grads()
+        per_example_output_means.append(output_mean)
+        gc.collect()
+        torch.cuda.empty_cache()
+    return per_example_output_means
+
+def abs_grad_dolly_layer_weights(model, tokenizer, input_tokenized_data, logger):
+    dolly_convolved_dataset, _ = get_dolly_data(tokenizer, input_tokenized_data, logger)
+    means = attention_heads_across_training_examples(model, tokenizer, dolly_convolved_dataset, 5, 5)
+    example_mean_all = []
+    for example_num, example_output_mean in enumerate(means):
+        example_mean_all.append(torch.stack(example_output_mean))
+
+    final_mean = torch.mean(torch.stack(example_mean_all), dim=0)
+    return final_mean
+
+
+CACHED_DOLLY_LAYER_WEIGHT_OBJ = None
+def cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, masks_data, logger):
+    global CACHED_DOLLY_LAYER_WEIGHT_OBJ
+    if CACHED_DOLLY_LAYER_WEIGHT_OBJ is None:
+        input_tokenized_data = {
+            "tokens": input_points,
+            "masks": masks_data
+        }
+        CACHED_DOLLY_LAYER_WEIGHT_OBJ = abs_grad_dolly_layer_weights(model, tokenizer, input_tokenized_data, logger)
+    if input_points.dim() == 1:
+        input_points = torch.unsqueeze(input_points, dim=0)
+    batch_size = input_points.shape[0]
+    final_tensor = torch.transpose(torch.unsqueeze(CACHED_DOLLY_LAYER_WEIGHT_OBJ, dim=0).expand(batch_size, -1, -1).unsqueeze(dim=-1).expand(-1, -1, -1, len(masks_data["target_mask"])), 0, 1)
+    return final_tensor
