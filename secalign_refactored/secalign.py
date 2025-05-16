@@ -246,7 +246,7 @@ def load_lora_model(model_name_or_path, load_model=True, **kwargs):
     tokenizer.model_max_length = 512 ### the default value is too large for model.generation_config.max_new_tokens
     if base_model_index and load_model:
         model = PeftModel.from_pretrained(model, model_name_or_path, is_trainable=False)
-    return model, tokenizer, frontend_delimiters
+    return model, tokenizer, frontend_delimiters    
 
 
 def test_model_output(llm_input, model, tokenizer):

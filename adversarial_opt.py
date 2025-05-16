@@ -68,6 +68,8 @@ def adversarial_opt(
         identical_outputs_before_stop = adversarial_parameters_dict.get("identical_outputs_before_stop", 5)
         generation_config = adversarial_parameters_dict.get("generation_config", attack_utility.DEFAULT_TEXT_GENERATION_CONFIG)
         eval_initial = adversarial_parameters_dict.get("eval_initial", True)
+        to_cache_logits = adversarial_parameters_dict.get("to_cache_logits", True)
+        to_cache_attentions = adversarial_parameters_dict.get("to_cache_attentions", True)
 
         logprobs_sequences, best_output_sequences = gcg.custom_gcg(model,
             tokenizer,
@@ -78,7 +80,9 @@ def adversarial_opt(
             eval_every_step=eval_every_step,
             identical_outputs_before_stop=identical_outputs_before_stop,
             generation_config=generation_config,
-            eval_initial=eval_initial
+            eval_initial=eval_initial,
+            to_cache_logits=to_cache_logits,
+            to_cache_attentions=to_cache_attentions
         )
         logger.log(logprobs_sequences)
         logger.log(best_output_sequences)

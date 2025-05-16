@@ -332,20 +332,30 @@ def attention_metricized_v2_true_loss(
     **kwargs
 ):
     ideal_attention_kwargs = kwargs.get("ideal_attentions_kwargs", {})
-    input_points_to_send = input_points
+    att_cacher = kwargs.get("att_cacher", None)
 
-    ideal_attentions = smart_ideal_attentions(model, tokenizer, ideal_attentions, input_points_to_send, masks_data, **ideal_attention_kwargs)
+    ideal_attentions = smart_ideal_attentions(model, tokenizer, ideal_attentions, input_points, masks_data, **ideal_attention_kwargs)
     layer_weight_strategy = smart_layer_weight_strategy(model, tokenizer, layer_weight_strategy, ideal_attentions, input_points, masks_data, logger)
 
     target_mask: torch.tensor = masks_data["target_mask"]
     loss_tensors_list = []
     num_processed = 0
-    for batch_logits, batch_true_attentions in attack_utility.bulk_forward_iter(model, input_points_to_send):
-        true_attentions = torch.stack([attention[:, :, -(len(target_mask) + 1):- 1, :] for attention in batch_true_attentions])
-        loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions[:, num_processed:num_processed + true_attentions.shape[1], ...], true_attentions, logger=logger, layer_weight_strategy=layer_weight_strategy[:, num_processed:num_processed + true_attentions.shape[1], ...])
-        num_processed += true_attentions.shape[1]
-        loss_tensors_list.append(loss_tensor)
-    
+    with torch.no_grad():
+        if att_cacher is None:
+            for batch_logits, batch_true_attentions in attack_utility.bulk_forward_iter(model, input_points):
+                true_attentions = torch.stack([attention[:, :, -(len(target_mask) + 1):- 1, :] for attention in batch_true_attentions])
+                loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions[:, num_processed:num_processed + true_attentions.shape[1], ...], true_attentions, logger=logger, layer_weight_strategy=layer_weight_strategy[:, num_processed:num_processed + true_attentions.shape[1], ...])
+                num_processed += true_attentions.shape[1]
+                loss_tensors_list.append(loss_tensor)
+        else:
+            for batch_logits, batch_true_attentions in att_cacher(model, tokenizer, input_points, masks_data, logger):
+                true_attentions = torch.stack([attention[:, :, -(len(target_mask) + 1):- 1, :] for attention in batch_true_attentions])
+                loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions[:, num_processed:num_processed + true_attentions.shape[1], ...], true_attentions, logger=logger, layer_weight_strategy=layer_weight_strategy[:, num_processed:num_processed + true_attentions.shape[1], ...])
+                num_processed += true_attentions.shape[1]
+                loss_tensors_list.append(loss_tensor) 
+                del batch_true_attentions, true_attentions
+                gc.collect()
+                torch.cuda.empty_cache()   
     loss_tensor = torch.cat(loss_tensors_list)
     return loss_tensor
 
