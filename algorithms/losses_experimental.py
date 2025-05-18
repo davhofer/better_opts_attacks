@@ -663,7 +663,7 @@ def attention_heads_across_training_examples(model, tokenizer, dolly_full_data, 
 
 def abs_grad_dolly_layer_weights(model, tokenizer, input_tokenized_data, logger):
     dolly_convolved_dataset, _ = get_dolly_data(tokenizer, input_tokenized_data, logger)
-    means = attention_heads_across_training_examples(model, tokenizer, dolly_convolved_dataset, 5, 5)
+    means = attention_heads_across_training_examples(model, tokenizer, dolly_convolved_dataset, 100, 5)
     example_mean_all = []
     for example_num, example_output_mean in enumerate(means):
         example_mean_all.append(torch.stack(example_output_mean))
@@ -685,4 +685,22 @@ def cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, masks_da
         input_points = torch.unsqueeze(input_points, dim=0)
     batch_size = input_points.shape[0]
     final_tensor = torch.transpose(torch.unsqueeze(CACHED_DOLLY_LAYER_WEIGHT_OBJ, dim=0).expand(batch_size, -1, -1).unsqueeze(dim=-1).expand(-1, -1, -1, len(masks_data["target_mask"])), 0, 1)
+    return final_tensor
+
+CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ = None
+def clip_cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, masks_data, logger, threshold=1):
+    global CACHED_DOLLY_LAYER_WEIGHT_OBJ, CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ
+    if CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ is None:
+        if CACHED_DOLLY_LAYER_WEIGHT_OBJ is None:
+            input_tokenized_data = {
+                "tokens": input_points,
+                "masks": masks_data
+            }
+            CACHED_DOLLY_LAYER_WEIGHT_OBJ = abs_grad_dolly_layer_weights(model, tokenizer, input_tokenized_data, logger)
+        threshold_mask = CACHED_DOLLY_LAYER_WEIGHT_OBJ > threshold
+        CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ = CACHED_DOLLY_LAYER_WEIGHT_OBJ[threshold_mask]
+    if input_points.dim() == 1:
+        input_points = torch.unsqueeze(input_points, dim=0)
+    batch_size = input_points.shape[0]
+    final_tensor = torch.transpose(torch.unsqueeze(CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ, dim=0).expand(batch_size, -1, -1).unsqueeze(dim=-1).expand(-1, -1, -1, len(masks_data["target_mask"])), 0, 1)
     return final_tensor
