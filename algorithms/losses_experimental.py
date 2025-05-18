@@ -697,8 +697,8 @@ def clip_cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, mas
                 "masks": masks_data
             }
             CACHED_DOLLY_LAYER_WEIGHT_OBJ = abs_grad_dolly_layer_weights(model, tokenizer, input_tokenized_data, logger)
-        threshold_mask = CACHED_DOLLY_LAYER_WEIGHT_OBJ > threshold
-        CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ = CACHED_DOLLY_LAYER_WEIGHT_OBJ[threshold_mask]
+        CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ = CACHED_DOLLY_LAYER_WEIGHT_OBJ.clone()
+        CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ[CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ < threshold] = 0
     if input_points.dim() == 1:
         input_points = torch.unsqueeze(input_points, dim=0)
     batch_size = input_points.shape[0]
