@@ -688,7 +688,7 @@ def cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, masks_da
     return final_tensor
 
 CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ = None
-def clip_cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, masks_data, logger, threshold=1):
+def clip_cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, masks_data, logger, threshold=0.7):
     global CACHED_DOLLY_LAYER_WEIGHT_OBJ, CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ
     if CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ is None:
         if CACHED_DOLLY_LAYER_WEIGHT_OBJ is None:
