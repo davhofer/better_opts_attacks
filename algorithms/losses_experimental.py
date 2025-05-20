@@ -658,7 +658,7 @@ def generate_random_inits_for_one_example(model, tokenizer, input_tokenized_data
     return new_input_tokenized_data_list
 
 def attention_heads_across_training_examples(model, tokenizer, dolly_full_data, num_examples, num_randoms_per_example):
-
+    
     dolly_relevant_examples = random.sample(dolly_full_data, num_examples)    
 
     per_example_output_means = []
@@ -673,8 +673,14 @@ def attention_heads_across_training_examples(model, tokenizer, dolly_full_data, 
     return per_example_output_means
 
 def abs_grad_dolly_layer_weights(model, tokenizer, input_tokenized_data, logger):
-    dolly_convolved_dataset, _ = get_dolly_data(tokenizer, input_tokenized_data, logger)
-    means = attention_heads_across_training_examples(model, tokenizer, dolly_convolved_dataset, 50, 5)
+    
+    NUM_EXAMPLES = 50
+    NUM_INITS_PER_EXAMPLE = 3
+    while True:
+        dolly_convolved_dataset, _ = get_dolly_data(tokenizer, input_tokenized_data, logger)
+        if len(dolly_convolved_dataset) >= NUM_EXAMPLES:
+            break
+    means = attention_heads_across_training_examples(model, tokenizer, dolly_convolved_dataset, NUM_EXAMPLES, NUM_INITS_PER_EXAMPLE)
     example_mean_all = []
     for example_num, example_output_mean in enumerate(means):
         example_mean_all.append(torch.stack(example_output_mean))
