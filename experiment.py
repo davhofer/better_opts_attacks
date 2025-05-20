@@ -212,7 +212,7 @@ def attack_secalign_model(
                 "attention_mask_strategy": "payload_only"
             }
         },
-        "max_steps": 350,
+        "max_steps": 0,
         "forward_eval_candidates": 512,
         "topk": 256,
         "substitution_validity_function": secalign.secalign_filter
@@ -342,7 +342,7 @@ if __name__ == "__main__":
     parser.add_argument(
         '--num_examples',
         type=int,
-        default=100,
+        default=50,
         help="Num examples to attack"
     )
 
@@ -374,7 +374,7 @@ if __name__ == "__main__":
     alpacaeval_convs_raw = [alpacaeval_convs_raw[i] for i in indices_to_sample]
 
     if args.multiprocess:
-        EXPT_FOLDER_PREFIX = "logs/full_eval_1_20"
+        EXPT_FOLDER_PREFIX = "logs/llama_3_full_1_20"
         os.makedirs(EXPT_FOLDER_PREFIX, exist_ok=True)
         gpu_ids = list(range(torch.cuda.device_count()))
         NUM_EXPERIMENTS_ON_GPU = len(alpacaeval_convs_raw) // len(gpu_ids)
@@ -383,5 +383,5 @@ if __name__ == "__main__":
         with multiprocessing.Pool(len(gpu_ids)) as process_pool:
             final_results = process_pool.starmap(run_secalign_eval_on_single_gpu, [(EXPT_FOLDER_PREFIX, i, alpacaeval_batched[i]) for i in gpu_ids])
     else:
-        EXPT_FOLDER_PREFIX = "logs/full_eval_1_20"
+        EXPT_FOLDER_PREFIX = "logs/llama_3_full_1_20"
         final_results = run_secalign_eval_on_single_gpu(EXPT_FOLDER_PREFIX, args.device, alpacaeval_convs_raw)

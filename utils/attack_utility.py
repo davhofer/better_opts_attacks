@@ -579,8 +579,6 @@ def bulk_logits_iter(
     Iterator version of bulk_logits that yields results one batch at a time
     to reduce memory usage. Now supports past_key_values for prefix caching.
     """
-    if batch_size <= 64:
-        raise ValueError(f"This is too slow. Exiting.")
     with torch.no_grad():
         for i in range(0, len(data), batch_size):
             data_piece = data[i:i + batch_size]
@@ -725,13 +723,13 @@ def generate_valid_input_tokenized_data(
 
         except Exception as e:
             INIT_TOKENIZATION_FAILED = f"The given initialization failed due to the following reasons - {str(e)}"
-            logger.log(INIT_TOKENIZATION_FAILED)
+            # logger.log(INIT_TOKENIZATION_FAILED)
             if new_init_config["strategy_type"] != "random":
                 raise ValueError(f"{INIT_TOKENIZATION_FAILED}")
             new_seed = int(time.time())
             RETRYING_STRING = f"Retrying with another random seed: {str(new_seed)}"
             new_init_config["seed"] = new_seed
-            logger.log(RETRYING_STRING)
+            # logger.log(RETRYING_STRING)
         else:
             break
         num_init_tries += 1
