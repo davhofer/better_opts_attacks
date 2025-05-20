@@ -538,11 +538,19 @@ def get_dolly_data(tokenizer, input_tokenized_data, logger):
     true_prefix_tokens = input_tokenized_data["tokens"][input_tokenized_data["masks"]["prefix_mask"]]
     true_suffix_tokens = input_tokenized_data["tokens"][input_tokenized_data["masks"]["suffix_mask"]]
     new_dolly_data = []
+    num_skipped = 0
     for dolly_data_point in dolly_data:
         current_input_tokenized_data, _ = attack_utility.generate_valid_input_tokenized_data(tokenizer, dolly_data_point, target, init_config, logger)
         current_prefix_mask = current_input_tokenized_data["masks"]["prefix_mask"]
         current_suffix_mask = current_input_tokenized_data["masks"]["suffix_mask"]
         new_tokens = copy.deepcopy(current_input_tokenized_data["tokens"])
+        if len(current_prefix_mask) < len(true_prefix_tokens):
+            num_skipped += 1
+            continue
+        if len(current_suffix_mask) < len(true_suffix_tokens):
+            num_skipped += 1
+            continue
+
         new_tokens[current_prefix_mask[-len(true_prefix_tokens):]] = true_prefix_tokens[-len(true_prefix_tokens):]
         new_tokens[current_suffix_mask[:len(true_suffix_tokens)]] = true_suffix_tokens[:len(true_suffix_tokens)]
         new_dolly_data.append(
@@ -551,6 +559,7 @@ def get_dolly_data(tokenizer, input_tokenized_data, logger):
                 "masks": current_input_tokenized_data["masks"]
             }
         )
+    logger.log(num_skipped)
     return new_dolly_data, true_init_config
 
 class SingleAttentionGradHook:
