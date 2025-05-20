@@ -344,6 +344,8 @@ def conversation_masks(
             prefix_pos = content.find(prefix_placeholder)
             suffix_pos = content.find(suffix_placeholder)
             
+            payload_string = content[prefix_pos + len(prefix_placeholder):suffix_pos]
+
             content = (
                 content[:prefix_pos] + 
                 adv_prefix_init + 
@@ -419,11 +421,9 @@ def conversation_masks(
                     content_mask[i] = True
     
     # Create payload mask (between prefix and suffix)
-    if prefix_span and suffix_span:
-        payload_mask = torch.zeros(seq_length, dtype=torch.bool)
-        payload_mask[prefix_span["end"]:suffix_span["start"]] = True
-    else:
-        payload_mask = torch.zeros(seq_length, dtype=torch.bool)
+    payload_span = find_containing_token_span(tokenizer, full_text, payload_string, final_tokens)
+    payload_mask = torch.zeros(seq_length, dtype=torch.bool)
+    payload_mask[payload_span["start"]:payload_span["end"]] = True
     
     # Create target mask
     target_start = len(full_text) - len(target_string)
@@ -716,6 +716,13 @@ def generate_valid_input_tokenized_data(
                 input_tokenized_data = string_masks(tokenizer, input_template, adv_prefix_init, adv_suffix_init, target_output_str)
             elif isinstance(input_template, list):
                 input_tokenized_data = conversation_masks(tokenizer, input_template, adv_prefix_init, adv_suffix_init, target_output_str)
+            
+            masks_data = input_tokenized_data["masks"]
+            if len(masks_data["prefix_mask"]) > new_init_config.get("prefix_length", 10000):
+                raise ValueError(f"Prefix is too long.")
+            if len(masks_data["suffix_mask"]) > new_init_config.get("suffix_length", 10000):
+                raise ValueError(f"Suffix is too long.")
+
         except Exception as e:
             INIT_TOKENIZATION_FAILED = f"The given initialization failed due to the following reasons - {str(e)}"
             logger.log(INIT_TOKENIZATION_FAILED)
@@ -813,13 +820,23 @@ class CachedTargetLogprobs:
         target_mask = masks_data["target_mask"]
         data_split = torch.split(input_points_sliced, self.batch_size, dim=0)
         losses_list = []
-        for data_batch in data_split:
-            new_legacy_cache = []
-            for key_cache, value_cache in self.cache_object["past_key_values"]:
-                new_legacy_cache.append((key_cache.expand(data_batch.shape[0], -1, -1, -1).clone(), value_cache.expand(data_batch.shape[0], -1, -1, -1).clone()))
-            logit_piece = model(input_ids=data_batch.to(model.device), past_key_values=transformers.DynamicCache.from_legacy_cache(new_legacy_cache)).logits
-            loss_tensor = UNREDUCED_CE_LOSS(torch.transpose(logit_piece[:, -(len(target_mask) + 1):- 1, :], 1, 2), target_tokens.repeat((logit_piece.shape[0], 1)).to(logit_piece.device)).sum(dim=1)
-            losses_list.append(loss_tensor)
+        with torch.no_grad():
+            for data_batch in data_split:
+                    new_legacy_cache = []
+                    for key_cache, value_cache in self.cache_object["past_key_values"]:
+                        new_legacy_cache.append((key_cache.expand(data_batch.shape[0], -1, -1, -1).clone(), value_cache.expand(data_batch.shape[0], -1, -1, -1).clone()))
+
+                    dynamic_cache = transformers.DynamicCache.from_legacy_cache(new_legacy_cache)
+                    output = model(input_ids=data_batch.to(model.device), past_key_values=dynamic_cache)
+                    logit_piece = output.logits
+                    loss_tensor = UNREDUCED_CE_LOSS(torch.transpose(logit_piece[:, -(len(target_mask) + 1):- 1, :], 1, 2), target_tokens.repeat((logit_piece.shape[0], 1)).to(logit_piece.device)).sum(dim=1)
+                    losses_list.append(loss_tensor.detach())
+                    for pair in new_legacy_cache:
+                        del pair
+                    del new_legacy_cache, dynamic_cache, output
+                    torch.cuda.synchronize()
+                    gc.collect()
+                    torch.cuda.empty_cache()
         losses_tensor = torch.cat(losses_list)
         return losses_tensor
 
@@ -854,13 +871,18 @@ class CachedBulkForward:
                     values_cached_new.requires_grad = False
                     batched_kv_cache.append((keys_cached_new, values_cached_new))
                 try:
+                    dynamic_cache = transformers.DynamicCache.from_legacy_cache(batched_kv_cache)
                     output = model(
                         input_ids = input_ids_sliced_batch.to(model.device),
-                        past_key_values = transformers.DynamicCache.from_legacy_cache(batched_kv_cache),
+                        past_key_values = dynamic_cache,
                         output_attentions = True
                     )
                     self.batch_size = batch_size // 2
-                    del output
+                    for pair in batched_kv_cache:
+                        del pair
+                    del batched_kv_cache
+                    del output, dynamic_cache
+                    torch.cuda.synchronize()
                     gc.collect()
                     torch.cuda.empty_cache()
                     break
@@ -899,6 +921,9 @@ class CachedBulkForward:
                 logits = output.logits
                 attentions = output.attentions
                 yield logits, attentions
+                for pair in new_legacy_cache:
+                    del pair
                 del output, logits, attentions, new_legacy_cache
+                torch.cuda.synchronize()
                 gc.collect()
                 torch.cuda.empty_cache()

@@ -179,6 +179,7 @@ def adversarial_opt(
             input_tokenized_data = best_choice_function(model, tokenizer, input_tokenized_data, all_best_tokens_sequences, logger, logprobs_sequences=all_logprobs_sequences)
 
             del logprobs_sequences, best_tokens_sequences
+            torch.cuda.synchronize()
             gc.collect()
             torch.cuda.empty_cache()
 

@@ -514,6 +514,8 @@ def get_dolly_data(tokenizer, input_tokenized_data, logger):
 
     assert (init_config is not None) and (target is not None)
 
+    common_payload_string = tokenizer.batch_decode(input_tokenized_data["tokens"][:, input_tokenized_data["masks"]["payload_mask"]])[0]
+
     dolly_15k_raw = datasets.load_dataset("databricks/databricks-dolly-15k")
     dolly_15k_filtered = [x for x in dolly_15k_raw["train"] if (x["context"] != "" and x["instruction"] != "")]
     dolly_data = [x for x in dolly_15k_filtered if len(x["context"]) <= 200 and len(x["instruction"]) < 300]
@@ -525,7 +527,7 @@ def get_dolly_data(tokenizer, input_tokenized_data, logger):
             },
             {
                 "role": "user",
-                "content": x["context"]
+                "content": x["context"] + " " + attack_utility.ADV_PREFIX_INDICATOR + common_payload_string + attack_utility.ADV_SUFFIX_INDICATOR
             }
         ]
         for x in dolly_data

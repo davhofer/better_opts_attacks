@@ -193,34 +193,6 @@ def attack_secalign_model(
     input_tokenized_data, true_init_config = attack_utility.generate_valid_input_tokenized_data(tokenizer, input_conv, target, initial_config, logger)
     logger.log(true_init_config)
 
-    gcg_baseline_params = {
-        "signal_function": gcg.og_gcg_signal,
-        "max_steps": 20,
-        "topk": 256,
-        "forward_eval_candidates": 512,
-        "substitution_validity_function": secalign.secalign_filter
-    }
-    adversarial_parameters_dict_baseline = {
-        "input_tokenized_data": input_tokenized_data,
-        "attack_algorithm": "custom_gcg",
-        "attack_hyperparameters": gcg_baseline_params,
-        "early_stop": False,
-        "eval_every_step": False,
-        "to_cache_logits": True,
-        "to_cache_attentions": True,
-    }
-
-    logger.log(adversarial_parameters_dict_baseline)
-    loss_sequences_baseline, best_output_sequences_baseline = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, adversarial_parameters_dict_baseline, logger)
-    logger.log(loss_sequences_baseline)
-    logger.log(best_output_sequences_baseline)
-    final_inputs_strings_baseline = tokenizer.batch_decode(best_output_sequences_baseline, clean_up_tokenization_spaces=False)
-    logger.log(final_inputs_strings_baseline)
-
-    del loss_sequences_baseline, best_output_sequences_baseline, final_inputs_strings_baseline
-    gc.collect()
-    torch.cuda.empty_cache()
-    
     weighted_attention_hyperparams = {
         "signal_function": losses_experimental.attention_metricized_signal_v2,
         "signal_kwargs": {
@@ -281,6 +253,41 @@ def attack_secalign_model(
     final_inputs_strings_attack = tokenizer.batch_decode(best_output_sequences_attack, clean_up_tokenization_spaces=False)
     logger.log(final_inputs_strings_attack)
 
+    del loss_sequences_attack, best_output_sequences_attack, final_inputs_strings_attack
+    torch.cuda.synchronize()
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    gcg_baseline_params = {
+        "signal_function": gcg.og_gcg_signal,
+        "max_steps": 500,
+        "topk": 256,
+        "forward_eval_candidates": 512,
+        "substitution_validity_function": secalign.secalign_filter
+    }
+    adversarial_parameters_dict_baseline = {
+        "input_tokenized_data": input_tokenized_data,
+        "attack_algorithm": "custom_gcg",
+        "attack_hyperparameters": gcg_baseline_params,
+        "early_stop": False,
+        "eval_every_step": False,
+        "to_cache_logits": True,
+        "to_cache_attentions": True,
+    }
+
+    logger.log(adversarial_parameters_dict_baseline)
+    loss_sequences_baseline, best_output_sequences_baseline = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, adversarial_parameters_dict_baseline, logger)
+    logger.log(loss_sequences_baseline)
+    logger.log(best_output_sequences_baseline)
+    final_inputs_strings_baseline = tokenizer.batch_decode(best_output_sequences_baseline, clean_up_tokenization_spaces=False)
+    logger.log(final_inputs_strings_baseline)
+
+    del loss_sequences_baseline, best_output_sequences_baseline, final_inputs_strings_baseline
+    torch.cuda.synchronize()
+    gc.collect()
+    torch.cuda.empty_cache()
+    
+
 def run_secalign_eval_on_single_gpu(expt_folder_prefix: str, self_device_idx, example_targets, **kwargs):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(self_device_idx)
     expt_folder = f"{expt_folder_prefix}/expt_{str(self_device_idx)}"
@@ -305,6 +312,7 @@ def run_secalign_eval_on_single_gpu(expt_folder_prefix: str, self_device_idx, ex
             "input_conv": example_target,
             "target": secalign.SECALIGN_HARD_TARGETS[0]
         }
+        logger.log(example_target)
         attack_secalign_model(example_target, model, tokenizer, frontend_delimiters, logger, convert_to_secalign_format=False)
         gc.collect()
         torch.cuda.empty_cache()
@@ -334,7 +342,7 @@ if __name__ == "__main__":
     parser.add_argument(
         '--num_examples',
         type=int,
-        default=50,
+        default=100,
         help="Num examples to attack"
     )
 
@@ -361,7 +369,9 @@ if __name__ == "__main__":
     ]
 
     print(f"num_examples={args.num_examples}")
-    alpacaeval_convs_raw = random.sample(alpacaeval_convs_raw, args.num_examples)
+    indices_to_sample = random.sample(list(range(len(alpacaeval_convs_raw))), args.num_examples)
+    print(f"indices_to_sample={indices_to_sample}")
+    alpacaeval_convs_raw = [alpacaeval_convs_raw[i] for i in indices_to_sample]
 
     if args.multiprocess:
         EXPT_FOLDER_PREFIX = "logs/full_eval_1_20"
