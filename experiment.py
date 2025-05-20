@@ -195,7 +195,7 @@ def attack_secalign_model(
 
     gcg_baseline_params = {
         "signal_function": gcg.og_gcg_signal,
-        "max_steps": 500,
+        "max_steps": 20,
         "topk": 256,
         "forward_eval_candidates": 512,
         "substitution_validity_function": secalign.secalign_filter
@@ -214,9 +214,12 @@ def attack_secalign_model(
     loss_sequences_baseline, best_output_sequences_baseline = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, adversarial_parameters_dict_baseline, logger)
     logger.log(loss_sequences_baseline)
     logger.log(best_output_sequences_baseline)
-    final_inputs_strings_control = tokenizer.batch_decode(best_output_sequences_baseline, clean_up_tokenization_spaces=False)
-    logger.log(final_inputs_strings_control)
+    final_inputs_strings_baseline = tokenizer.batch_decode(best_output_sequences_baseline, clean_up_tokenization_spaces=False)
+    logger.log(final_inputs_strings_baseline)
 
+    del loss_sequences_baseline, best_output_sequences_baseline, final_inputs_strings_baseline
+    gc.collect()
+    torch.cuda.empty_cache()
     
     weighted_attention_hyperparams = {
         "signal_function": losses_experimental.attention_metricized_signal_v2,

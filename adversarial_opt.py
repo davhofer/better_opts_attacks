@@ -7,6 +7,7 @@ import time
 import bitsandbytes
 import itertools
 import pandas as pd
+import gc
 
 import algorithms.gcg as gcg
 import algorithms.autodan as autodan
@@ -176,5 +177,9 @@ def adversarial_opt(
             all_best_tokens_sequences.extend(best_tokens_sequences)
 
             input_tokenized_data = best_choice_function(model, tokenizer, input_tokenized_data, all_best_tokens_sequences, logger, logprobs_sequences=all_logprobs_sequences)
+
+            del logprobs_sequences, best_tokens_sequences
+            gc.collect()
+            torch.cuda.empty_cache()
 
         return all_logprobs_sequences, all_best_tokens_sequences

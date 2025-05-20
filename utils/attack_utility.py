@@ -770,16 +770,22 @@ class CachedTargetLogprobs:
                         values_cached_new = values_cached.expand(batch_size, -1, -1, -1)
                         batched_kv_cache.append((keys_cached_new, values_cached_new))
                     try:
+                        dynamic_cache = transformers.DynamicCache.from_legacy_cache(batched_kv_cache)
                         output = model(
                             input_ids = input_ids_sliced_batch.to(model.device),
-                            past_key_values = transformers.DynamicCache.from_legacy_cache(batched_kv_cache)
+                            past_key_values = dynamic_cache
                         ).logits
                         self.batch_size = batch_size // 2
-                        del output
+                        for pair in batched_kv_cache:
+                            del pair
+                        del batched_kv_cache
+                        del output, dynamic_cache
+                        torch.cuda.synchronize()
                         gc.collect()
                         torch.cuda.empty_cache()
                         break
                     except torch.cuda.OutOfMemoryError:
+                        del dynamic_cache, batched_kv_cache
                         gc.collect()
                         torch.cuda.empty_cache()
                         batch_size //= 2
