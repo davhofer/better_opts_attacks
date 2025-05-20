@@ -674,7 +674,7 @@ def attention_heads_across_training_examples(model, tokenizer, dolly_full_data, 
 
 def abs_grad_dolly_layer_weights(model, tokenizer, input_tokenized_data, logger):
     dolly_convolved_dataset, _ = get_dolly_data(tokenizer, input_tokenized_data, logger)
-    means = attention_heads_across_training_examples(model, tokenizer, dolly_convolved_dataset, 100, 5)
+    means = attention_heads_across_training_examples(model, tokenizer, dolly_convolved_dataset, 50, 5)
     example_mean_all = []
     for example_num, example_output_mean in enumerate(means):
         example_mean_all.append(torch.stack(example_output_mean))
