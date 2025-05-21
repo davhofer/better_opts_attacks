@@ -63,6 +63,7 @@ def adversarial_opt(
         logger.log(loss_sequences)
         logger.log(best_output_sequences)
         return loss_sequences, best_output_sequences, None
+    
     elif attack_algorithm == "custom_gcg":
         early_stop = adversarial_parameters_dict.get("early_stop", True)
         eval_every_step = adversarial_parameters_dict.get("eval_every_step", False)
@@ -88,6 +89,7 @@ def adversarial_opt(
         logger.log(logprobs_sequences)
         logger.log(best_output_sequences)
         return logprobs_sequences, best_output_sequences
+    
     elif attack_algorithm == "autodan":
         early_stop = adversarial_parameters_dict.get("early_stop", True)
         eval_every_step = adversarial_parameters_dict.get("eval_every_step", True)
@@ -107,6 +109,7 @@ def adversarial_opt(
         logger.log(logprobs_sequences)
         logger.log(best_output_sequences)
         return logprobs_sequences, best_output_sequences
+    
     elif attack_algorithm == "embed_opt":
         early_stop = adversarial_parameters_dict.get("early_stop", False)
         eval_every_step = adversarial_parameters_dict.get("eval_every_step", True)
@@ -185,3 +188,15 @@ def adversarial_opt(
             torch.cuda.empty_cache()
 
         return all_logprobs_sequences, all_best_tokens_sequences
+
+
+# def universal_adversarial_opt(
+#     model: transformers.AutoModelForCausalLM,
+#     tokenizer: transformers.AutoTokenizer,
+#     input_template: str | typing.List[typing.Dict[str, str]],
+#     target_output_str: str,
+#     adversarial_parameters_dict: typing.Dict,
+#     logger: experiment_logger.ExperimentLogger,
+# )
+
+
