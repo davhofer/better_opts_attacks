@@ -181,8 +181,8 @@ def attack_secalign_model(
 
     initial_config = {
         "strategy_type": "random",
-        "prefix_length": 1,
-        "suffix_length": 19,
+        "prefix_length": 0,
+        "suffix_length": 20,
         "prefix_filter": secalign.secalign_filter,
         "suffix_filter": secalign.secalign_filter,
         "filter_metadata": {
@@ -786,29 +786,29 @@ if __name__ == "__main__":
     indices_to_sample=[83, 167, 170, 50, 133, 82, 159, 105, 152, 203, 96, 125, 191, 15, 187, 162, 6, 88, 101, 185, 156, 109, 171, 195, 123, 190, 205, 158, 163, 178, 63, 134, 39, 197, 37, 95, 177, 93, 10, 147, 55, 115, 11, 128, 25, 189, 113, 106, 51, 146]
 
     if args.restart_log_folder is not None:
-        alpacaeval_convs_raw = [alpacaeval_convs_raw[i] for i in indices_to_sample]
         print(f"indices_to_sample={indices_to_sample}")
         if args.multiprocess:
-            EXPT_FOLDER_PREFIX = "logs/llama_3_full_1_19"
+            alpacaeval_convs_raw = [alpacaeval_convs_raw[i] for i in indices_to_sample]
+            EXPT_FOLDER_PREFIX = args.restart_log_folder
             os.makedirs(EXPT_FOLDER_PREFIX, exist_ok=True)
             gpu_ids = list(range(torch.cuda.device_count()))
             NUM_EXPERIMENTS_ON_GPU = len(alpacaeval_convs_raw) // len(gpu_ids)
-            alpacaeval_batched = [alpacaeval_convs_raw[(NUM_EXPERIMENTS_ON_GPU) * x: (NUM_EXPERIMENTS_ON_GPU)* (x + 1)] for x in gpu_ids]
+            indices_batched = [indices_to_sample[(NUM_EXPERIMENTS_ON_GPU) * x: (NUM_EXPERIMENTS_ON_GPU)* (x + 1)] for x in gpu_ids]
             done_ones = DONE_ON_SEATTLE_MAPS[EXPT_FOLDER_PREFIX.split("/")[-1]]
 
-            corrected_alpacaeval_batched = []
-            for alpacaeval_batch in alpacaeval_batched:
+            corrected_indices_batched = []
+            for indices_batch in indices_batched:
                 corrected_batch = []
-                for ex_index in alpacaeval_batch:
+                for ex_index in indices_batch:
                     if ex_index in done_ones["unfinished"]:
                         corrected_batch.append(ex_index)
-                corrected_alpacaeval_batched.append(corrected_batch)
-
+                corrected_indices_batched.append(corrected_batch)
+            alpacaeval_batched = [[alpacaeval_convs_raw[indices_to_sample.index(y)] for y in corrected_indices_batch] for corrected_indices_batch in corrected_indices_batched]
             multiprocessing.set_start_method("spawn", force=True)
             with multiprocessing.Pool(len(gpu_ids)) as process_pool:
                 final_results = process_pool.starmap(run_secalign_eval_on_single_gpu, [(EXPT_FOLDER_PREFIX, i, alpacaeval_batched[i]) for i in gpu_ids])
         else:
-            EXPT_FOLDER_PREFIX = "logs/llama_3_full_1_19"
+            EXPT_FOLDER_PREFIX = args.restart_log_folder
             final_results = run_secalign_eval_on_single_gpu(EXPT_FOLDER_PREFIX, args.device, alpacaeval_convs_raw)
 
     if args.restart_log_folder is None:
