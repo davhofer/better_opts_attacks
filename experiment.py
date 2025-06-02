@@ -181,8 +181,8 @@ def attack_secalign_model(
 
     initial_config = {
         "strategy_type": "random",
-        "prefix_length": 2,
-        "suffix_length": 20,
+        "prefix_length": 1,
+        "suffix_length": 19,
         "prefix_filter": secalign.secalign_filter,
         "suffix_filter": secalign.secalign_filter,
         "filter_metadata": {
@@ -288,7 +288,7 @@ def attack_secalign_model(
     torch.cuda.empty_cache()
     
 
-def run_secalign_eval_on_single_gpu(expt_folder_prefix: str, self_device_idx, example_targets, **kwargs):
+def run_secalign_eval_on_single_gpu(expt_folder_prefix: str, self_device_idx, example_targets, example_shift = 0, **kwargs):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(self_device_idx)
     expt_folder = f"{expt_folder_prefix}/expt_{str(self_device_idx)}"
     if not os.path.exists(expt_folder):
@@ -303,11 +303,11 @@ def run_secalign_eval_on_single_gpu(expt_folder_prefix: str, self_device_idx, ex
     except Exception:
         traceback.print_exc()
     
-    for example_num, example_target in enumerate(example_targets):
+    for example_num, example_target in enumerate(example_targets[example_shift:]):
         now_str = str(datetime.datetime.now()).replace("-", "").replace(" ", "").replace(":", "").replace(".", "")
         expt_id = f"run_{now_str}"
         logger = experiment_logger.ExperimentLogger(f"{expt_folder}/{expt_id}")
-        logger.log(model_name, example_num=example_num)
+        logger.log(model_name, example_num=example_num + example_shift)
         example_target = {
             "input_conv": example_target,
             "target": secalign.SECALIGN_HARD_TARGETS[0]
@@ -319,6 +319,416 @@ def run_secalign_eval_on_single_gpu(expt_folder_prefix: str, self_device_idx, ex
 
 if __name__ == "__main__":
 
+    DONE_ON_SEATTLE_MAPS = {'llama_3_full_3_17': {'excepted': {10, 39, 50, 55, 152},
+  'finished': {15,
+   37,
+   63,
+   82,
+   83,
+   93,
+   95,
+   96,
+   105,
+   125,
+   133,
+   134,
+   147,
+   158,
+   159,
+   163,
+   167,
+   170,
+   177,
+   178,
+   187,
+   190,
+   191,
+   197,
+   203,
+   205},
+  'unfinished': {6,
+   11,
+   25,
+   51,
+   88,
+   101,
+   106,
+   109,
+   113,
+   115,
+   123,
+   128,
+   146,
+   156,
+   162,
+   171,
+   185,
+   189,
+   195}},
+ 'llama_3_full_1_19': {'excepted': {39, 95, 152, 205},
+  'finished': {10,
+   37,
+   50,
+   63,
+   82,
+   83,
+   93,
+   96,
+   105,
+   125,
+   133,
+   134,
+   158,
+   159,
+   163,
+   167,
+   170,
+   177,
+   178,
+   190,
+   197,
+   203},
+  'unfinished': {6,
+   11,
+   15,
+   25,
+   51,
+   55,
+   88,
+   101,
+   106,
+   109,
+   113,
+   115,
+   123,
+   128,
+   146,
+   147,
+   156,
+   162,
+   171,
+   185,
+   187,
+   189,
+   191,
+   195}},
+ 'llama_3_full_5_20': {'excepted': {39, 50, 152, 205},
+  'finished': {10,
+   15,
+   37,
+   63,
+   82,
+   83,
+   93,
+   95,
+   96,
+   105,
+   125,
+   133,
+   134,
+   147,
+   158,
+   159,
+   163,
+   167,
+   170,
+   177,
+   178,
+   187,
+   190,
+   191,
+   197,
+   203},
+  'unfinished': {6,
+   11,
+   25,
+   51,
+   55,
+   88,
+   101,
+   106,
+   109,
+   113,
+   115,
+   123,
+   128,
+   146,
+   156,
+   162,
+   171,
+   185,
+   189,
+   195}},
+ 'llama_3_full_4_20': {'excepted': {39, 50, 125, 133, 152},
+  'finished': {15,
+   37,
+   63,
+   82,
+   83,
+   93,
+   95,
+   96,
+   105,
+   134,
+   158,
+   159,
+   163,
+   167,
+   170,
+   177,
+   178,
+   187,
+   190,
+   191,
+   197,
+   203,
+   205},
+  'unfinished': {6,
+   10,
+   11,
+   25,
+   51,
+   55,
+   88,
+   101,
+   106,
+   109,
+   113,
+   115,
+   123,
+   128,
+   146,
+   147,
+   156,
+   162,
+   171,
+   185,
+   189,
+   195}},
+ 'llama_3_full_0_20': {'excepted': {10, 39, 55, 95, 96, 152, 205},
+  'finished': {15,
+   37,
+   50,
+   63,
+   82,
+   83,
+   93,
+   105,
+   115,
+   125,
+   133,
+   134,
+   147,
+   158,
+   159,
+   163,
+   167,
+   170,
+   177,
+   178,
+   187,
+   190,
+   191,
+   197,
+   203},
+  'unfinished': {6,
+   11,
+   25,
+   51,
+   88,
+   101,
+   106,
+   109,
+   113,
+   123,
+   128,
+   146,
+   156,
+   162,
+   171,
+   185,
+   189,
+   195}},
+ 'llama_3_full_1_20': {'excepted': {10, 39, 95, 125, 152},
+  'finished': {37,
+   50,
+   63,
+   82,
+   83,
+   93,
+   96,
+   105,
+   133,
+   134,
+   147,
+   158,
+   159,
+   163,
+   167,
+   170,
+   177,
+   178,
+   190,
+   191,
+   197,
+   203,
+   205},
+  'unfinished': {6,
+   11,
+   15,
+   25,
+   51,
+   55,
+   88,
+   101,
+   106,
+   109,
+   113,
+   115,
+   123,
+   128,
+   146,
+   156,
+   162,
+   171,
+   185,
+   187,
+   189,
+   195}},
+ 'llama_3_full_5_15': {'excepted': {39, 125, 152, 158},
+  'finished': {10,
+   11,
+   15,
+   37,
+   50,
+   55,
+   63,
+   82,
+   83,
+   93,
+   95,
+   96,
+   105,
+   115,
+   128,
+   133,
+   134,
+   147,
+   159,
+   163,
+   167,
+   170,
+   177,
+   178,
+   187,
+   190,
+   191,
+   197,
+   203,
+   205},
+  'unfinished': {6,
+   25,
+   51,
+   88,
+   101,
+   106,
+   109,
+   113,
+   123,
+   146,
+   156,
+   162,
+   171,
+   185,
+   189,
+   195}},
+ 'llama_3_full_2_20': {'excepted': {39, 50, 152, 158},
+  'finished': {37,
+   63,
+   82,
+   83,
+   105,
+   133,
+   134,
+   159,
+   163,
+   167,
+   170,
+   178,
+   190,
+   197,
+   205},
+  'unfinished': {6,
+   10,
+   11,
+   15,
+   25,
+   51,
+   55,
+   88,
+   93,
+   95,
+   96,
+   101,
+   106,
+   109,
+   113,
+   115,
+   123,
+   125,
+   128,
+   146,
+   147,
+   156,
+   162,
+   171,
+   177,
+   185,
+   187,
+   189,
+   191,
+   195,
+   203}},
+ 'llama_3_full_3_20': {'excepted': {39, 125, 205},
+  'finished': {10,
+   11,
+   15,
+   25,
+   37,
+   50,
+   51,
+   55,
+   63,
+   82,
+   83,
+   93,
+   95,
+   96,
+   105,
+   106,
+   113,
+   115,
+   128,
+   133,
+   134,
+   147,
+   152,
+   158,
+   159,
+   163,
+   167,
+   170,
+   177,
+   178,
+   187,
+   189,
+   190,
+   191,
+   197,
+   203},
+  'unfinished': {6, 88, 101, 109, 123, 146, 156, 162, 171, 185, 195}}}
+
+    
     parser = argparse.ArgumentParser(description='Script with GPU device selection.')
     parser.add_argument(
         '--device', 
@@ -345,6 +755,11 @@ if __name__ == "__main__":
         default=50,
         help="Num examples to attack"
     )
+    parser.add_argument(
+        "--restart-log-folder",
+        type=str,
+        default=None
+    )
 
     parser.set_defaults(multiprocess=True)
 
@@ -369,19 +784,46 @@ if __name__ == "__main__":
     ]
 
     print(f"num_examples={args.num_examples}")
-    indices_to_sample = random.sample(list(range(len(alpacaeval_convs_raw))), args.num_examples)
-    print(f"indices_to_sample={indices_to_sample}")
-    alpacaeval_convs_raw = [alpacaeval_convs_raw[i] for i in indices_to_sample]
+    indices_to_sample=[83, 167, 170, 50, 133, 82, 159, 105, 152, 203, 96, 125, 191, 15, 187, 162, 6, 88, 101, 185, 156, 109, 171, 195, 123, 190, 205, 158, 163, 178, 63, 134, 39, 197, 37, 95, 177, 93, 10, 147, 55, 115, 11, 128, 25, 189, 113, 106, 51, 146]
 
-    if args.multiprocess:
-        EXPT_FOLDER_PREFIX = "logs/llama_3_full_2_20"
-        os.makedirs(EXPT_FOLDER_PREFIX, exist_ok=True)
-        gpu_ids = list(range(torch.cuda.device_count()))
-        NUM_EXPERIMENTS_ON_GPU = len(alpacaeval_convs_raw) // len(gpu_ids)
-        alpacaeval_batched = [alpacaeval_convs_raw[(NUM_EXPERIMENTS_ON_GPU) * x: (NUM_EXPERIMENTS_ON_GPU)* (x + 1)] for x in gpu_ids]
-        multiprocessing.set_start_method("spawn", force=True)
-        with multiprocessing.Pool(len(gpu_ids)) as process_pool:
-            final_results = process_pool.starmap(run_secalign_eval_on_single_gpu, [(EXPT_FOLDER_PREFIX, i, alpacaeval_batched[i]) for i in gpu_ids])
-    else:
-        EXPT_FOLDER_PREFIX = "logs/llama_3_full_2_20"
-        final_results = run_secalign_eval_on_single_gpu(EXPT_FOLDER_PREFIX, args.device, alpacaeval_convs_raw)
+    if args.restart_log_folder is not None:
+        alpacaeval_convs_raw = [alpacaeval_convs_raw[i] for i in indices_to_sample]
+        print(f"indices_to_sample={indices_to_sample}")
+        if args.multiprocess:
+            EXPT_FOLDER_PREFIX = "logs/llama_3_full_1_19"
+            os.makedirs(EXPT_FOLDER_PREFIX, exist_ok=True)
+            gpu_ids = list(range(torch.cuda.device_count()))
+            NUM_EXPERIMENTS_ON_GPU = len(alpacaeval_convs_raw) // len(gpu_ids)
+            alpacaeval_batched = [alpacaeval_convs_raw[(NUM_EXPERIMENTS_ON_GPU) * x: (NUM_EXPERIMENTS_ON_GPU)* (x + 1)] for x in gpu_ids]
+            done_ones = DONE_ON_SEATTLE_MAPS[EXPT_FOLDER_PREFIX.split("/")[-1]]
+
+            corrected_alpacaeval_batched = []
+            for alpacaeval_batch in alpacaeval_batched:
+                corrected_batch = []
+                for ex_index in alpacaeval_batch:
+                    if ex_index in done_ones["unfinished"]:
+                        corrected_batch.append(ex_index)
+                corrected_alpacaeval_batched.append(corrected_batch)
+
+            multiprocessing.set_start_method("spawn", force=True)
+            with multiprocessing.Pool(len(gpu_ids)) as process_pool:
+                final_results = process_pool.starmap(run_secalign_eval_on_single_gpu, [(EXPT_FOLDER_PREFIX, i, alpacaeval_batched[i]) for i in gpu_ids])
+        else:
+            EXPT_FOLDER_PREFIX = "logs/llama_3_full_1_19"
+            final_results = run_secalign_eval_on_single_gpu(EXPT_FOLDER_PREFIX, args.device, alpacaeval_convs_raw)
+
+    if args.restart_log_folder is None:
+        alpacaeval_convs_raw = [alpacaeval_convs_raw[i] for i in indices_to_sample]
+        print(f"indices_to_sample={indices_to_sample}")
+        if args.multiprocess:
+            EXPT_FOLDER_PREFIX = "logs/llama_3_full_1_19"
+            os.makedirs(EXPT_FOLDER_PREFIX, exist_ok=True)
+            gpu_ids = list(range(torch.cuda.device_count()))
+            NUM_EXPERIMENTS_ON_GPU = len(alpacaeval_convs_raw) // len(gpu_ids)
+            alpacaeval_batched = [alpacaeval_convs_raw[(NUM_EXPERIMENTS_ON_GPU) * x: (NUM_EXPERIMENTS_ON_GPU)* (x + 1)] for x in gpu_ids]
+            multiprocessing.set_start_method("spawn", force=True)
+            with multiprocessing.Pool(len(gpu_ids)) as process_pool:
+                final_results = process_pool.starmap(run_secalign_eval_on_single_gpu, [(EXPT_FOLDER_PREFIX, i, alpacaeval_batched[i]) for i in gpu_ids])
+        else:
+            EXPT_FOLDER_PREFIX = "logs/llama_3_full_1_19"
+            final_results = run_secalign_eval_on_single_gpu(EXPT_FOLDER_PREFIX, args.device, alpacaeval_convs_raw)
