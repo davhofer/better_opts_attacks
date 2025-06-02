@@ -181,7 +181,7 @@ def attack_secalign_model(
 
     initial_config = {
         "strategy_type": "random",
-        "prefix_length": 4,
+        "prefix_length": 0,
         "suffix_length": 20,
         "prefix_filter": secalign.secalign_filter,
         "suffix_filter": secalign.secalign_filter,
@@ -193,77 +193,77 @@ def attack_secalign_model(
     input_tokenized_data, true_init_config = attack_utility.generate_valid_input_tokenized_data(tokenizer, input_conv, target, initial_config, logger)
     logger.log(true_init_config)
 
-    weighted_attention_hyperparams = {
-        "signal_function": losses_experimental.attention_metricized_signal_v2,
-        "signal_kwargs": {
-            "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
-            "layer_weight_strategy": losses_experimental.cached_abs_grad_dolly_layer_weights,
-            "ideal_attentions": losses_experimental.uniform_ideal_attentions,
-            "ideal_attentions_kwargs": {
-                "attention_mask_strategy": "payload_only"
-            }
-        },
-        "true_loss_function": losses_experimental.attention_metricized_v2_true_loss,
-        "true_loss_kwargs": {
-            "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
-            "layer_weight_strategy": losses_experimental.cached_abs_grad_dolly_layer_weights,
-            "ideal_attentions": losses_experimental.uniform_ideal_attentions,
-            "ideal_attentions_kwargs": {
-                "attention_mask_strategy": "payload_only"
-            }
-        },
-        "max_steps": 350,
-        "forward_eval_candidates": 512,
-        "topk": 256,
-        "substitution_validity_function": secalign.secalign_filter
-    }
-    weighted_attention_step = {
-        "attack_algorithm": "custom_gcg",
-        "attack_hyperparameters": weighted_attention_hyperparams
-    }
+    # weighted_attention_hyperparams = {
+    #     "signal_function": losses_experimental.attention_metricized_signal_v2,
+    #     "signal_kwargs": {
+    #         "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
+    #         "layer_weight_strategy": losses_experimental.cached_abs_grad_dolly_layer_weights,
+    #         "ideal_attentions": losses_experimental.uniform_ideal_attentions,
+    #         "ideal_attentions_kwargs": {
+    #             "attention_mask_strategy": "payload_only"
+    #         }
+    #     },
+    #     "true_loss_function": losses_experimental.attention_metricized_v2_true_loss,
+    #     "true_loss_kwargs": {
+    #         "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
+    #         "layer_weight_strategy": losses_experimental.cached_abs_grad_dolly_layer_weights,
+    #         "ideal_attentions": losses_experimental.uniform_ideal_attentions,
+    #         "ideal_attentions_kwargs": {
+    #             "attention_mask_strategy": "payload_only"
+    #         }
+    #     },
+    #     "max_steps": 350,
+    #     "forward_eval_candidates": 512,
+    #     "topk": 256,
+    #     "substitution_validity_function": secalign.secalign_filter
+    # }
+    # weighted_attention_step = {
+    #     "attack_algorithm": "custom_gcg",
+    #     "attack_hyperparameters": weighted_attention_hyperparams
+    # }
 
-    gcg_hyperparams = {
-        "max_steps": 150,
-        "topk": 256,
-        "forward_eval_candidates": 512,
-        "substitution_validity_function": secalign.secalign_filter
-    }
-    gcg_step = {
-        "attack_algorithm": "custom_gcg",
-        "attack_hyperparameters": gcg_hyperparams
-    }
+    # gcg_hyperparams = {
+    #     "max_steps": 150,
+    #     "topk": 256,
+    #     "forward_eval_candidates": 512,
+    #     "substitution_validity_function": secalign.secalign_filter
+    # }
+    # gcg_step = {
+    #     "attack_algorithm": "custom_gcg",
+    #     "attack_hyperparameters": gcg_hyperparams
+    # }
 
-    attack_config = {
-        "input_tokenized_data": input_tokenized_data,
-        "attack_algorithm": "sequential",
-        "attack_hyperparameters": [
-            weighted_attention_step,
-            gcg_step
-        ],
-        "early_stop": False,
-        "eval_every_step": False,
-        "to_cache_logits": True,
-        "to_cache_attentions": True
-    }
+    # attack_config = {
+    #     "input_tokenized_data": input_tokenized_data,
+    #     "attack_algorithm": "sequential",
+    #     "attack_hyperparameters": [
+    #         weighted_attention_step,
+    #         gcg_step
+    #     ],
+    #     "early_stop": False,
+    #     "eval_every_step": False,
+    #     "to_cache_logits": True,
+    #     "to_cache_attentions": True
+    # }
 
-    logger.log(attack_config)
-    loss_sequences_attack, best_output_sequences_attack = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, attack_config, logger)
-    logger.log(loss_sequences_attack)
-    logger.log(best_output_sequences_attack)
-    final_inputs_strings_attack = tokenizer.batch_decode(best_output_sequences_attack, clean_up_tokenization_spaces=False)
-    logger.log(final_inputs_strings_attack)
+    # logger.log(attack_config)
+    # loss_sequences_attack, best_output_sequences_attack = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, attack_config, logger)
+    # logger.log(loss_sequences_attack)
+    # logger.log(best_output_sequences_attack)
+    # final_inputs_strings_attack = tokenizer.batch_decode(best_output_sequences_attack, clean_up_tokenization_spaces=False)
+    # logger.log(final_inputs_strings_attack)
 
-    del loss_sequences_attack, best_output_sequences_attack, final_inputs_strings_attack
-    torch.cuda.synchronize()
-    gc.collect()
-    torch.cuda.empty_cache()
+    # del loss_sequences_attack, best_output_sequences_attack, final_inputs_strings_attack
+    # torch.cuda.synchronize()
+    # gc.collect()
+    # torch.cuda.empty_cache()
 
     gcg_baseline_params = {
         "signal_function": gcg.og_gcg_signal,
         "max_steps": 500,
         "topk": 256,
         "forward_eval_candidates": 512,
-        "substitution_validity_function": secalign.secalign_filter
+        "substitution_validity_function": secalign.struq_filter
     }
     adversarial_parameters_dict_baseline = {
         "input_tokenized_data": input_tokenized_data,
@@ -294,8 +294,8 @@ def run_secalign_eval_on_single_gpu(expt_folder_prefix: str, self_device_idx, ex
     if not os.path.exists(expt_folder):
         os.mkdir(expt_folder)
     shutil.copy(__file__, expt_folder)
-    model_name = "mistralai-instruct"
-    defence = "secalign"
+    model_name = "mistralai"
+    defence = "struq"
     try:
         model, tokenizer, frontend_delimiters = secalign.maybe_load_secalign_defended_model(model_name, defence, device_map=f"cuda:0", torch_dtype=torch.float16, attn_implementation="eager", load_model=True)
         model.generation_config.pad_token_id = tokenizer.pad_token_id
@@ -312,7 +312,7 @@ def run_secalign_eval_on_single_gpu(expt_folder_prefix: str, self_device_idx, ex
             "target": secalign.SECALIGN_HARD_TARGETS[0]
         }
         logger.log(example_target)
-        attack_secalign_model(example_target, model, tokenizer, frontend_delimiters, logger, convert_to_secalign_format=False)
+        attack_secalign_model(example_target, model, tokenizer, frontend_delimiters, logger, convert_to_secalign_format=True)
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -373,7 +373,7 @@ if __name__ == "__main__":
     alpacaeval_convs_raw = [alpacaeval_convs_raw[i] for i in indices_to_sample]
 
     if args.multiprocess:
-        EXPT_FOLDER_PREFIX = "logs/mistral_full_4_20"
+        EXPT_FOLDER_PREFIX = "logs/mistral_struq_baseline"
         os.makedirs(EXPT_FOLDER_PREFIX, exist_ok=True)
         gpu_ids = list(range(torch.cuda.device_count()))
         NUM_EXPERIMENTS_ON_GPU = len(alpacaeval_convs_raw) // len(gpu_ids)
@@ -382,5 +382,5 @@ if __name__ == "__main__":
         with multiprocessing.Pool(len(gpu_ids)) as process_pool:
             final_results = process_pool.starmap(run_secalign_eval_on_single_gpu, [(EXPT_FOLDER_PREFIX, i, alpacaeval_batched[i]) for i in gpu_ids])
     else:
-        EXPT_FOLDER_PREFIX = "logs/mistral_full_4_20"
+        EXPT_FOLDER_PREFIX = "logs/mistral_struq_baseline"
         final_results = run_secalign_eval_on_single_gpu(EXPT_FOLDER_PREFIX, args.device, alpacaeval_convs_raw)
