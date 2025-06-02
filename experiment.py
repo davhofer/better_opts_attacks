@@ -294,11 +294,10 @@ def run_secalign_eval_on_single_gpu(expt_folder_prefix: str, self_device_idx, ex
     if not os.path.exists(expt_folder):
         os.mkdir(expt_folder)
     shutil.copy(__file__, expt_folder)
-    model_name = "meta-llama-instruct"
+    model_name = "mistralai-instruct"
     defence = "secalign"
-    torch.cuda.set_device(self_device_idx)
     try:
-        model, tokenizer, frontend_delimiters = secalign.maybe_load_secalign_defended_model(model_name, defence, device_map=f"cuda:{str(self_device_idx)}", torch_dtype=torch.float16, attn_implementation="eager")
+        model, tokenizer, frontend_delimiters = secalign.maybe_load_secalign_defended_model(model_name, defence, device_map=f"cuda:0", torch_dtype=torch.float16, attn_implementation="eager", load_model=True)
         model.generation_config.pad_token_id = tokenizer.pad_token_id
     except Exception:
         traceback.print_exc()

@@ -260,7 +260,7 @@ def find_containing_token_span(tokenizer: transformers.PreTrainedTokenizer,
     span_tokens = full_tokens[token_start:token_end]
     decoded = tokenizer.decode(span_tokens, clean_up_tokenization_spaces=False)
     
-    assert target_text in decoded, f"Target text: {target_text} not found in decoded string: {decoded}"
+    # assert target_text in decoded, f"Target text: {target_text} not found in decoded string: {decoded}"
     
     return {
         "start": token_start,

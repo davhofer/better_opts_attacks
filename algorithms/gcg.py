@@ -144,6 +144,7 @@ def rand_gcg_signal(
     masks_data: typing.Dict[str, torch.tensor],
     gcg_topk: int,
     logger: experiment_logger.ExperimentLogger,
+    **kwargs
 ):
     optim_mask: torch.tensor = masks_data["optim_mask"]
 
