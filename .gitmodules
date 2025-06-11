@@ -1,9 +1,6 @@
 [submodule "other_repos/SecAlign"]
 	path = other_repos/SecAlign
 	url = https://github.com/facebookresearch/SecAlign.git
-[submodule "other_repos/alpaca_farm"]
-	path = other_repos/alpaca_farm
-	url = https://huggingface.co/datasets/tatsu-lab/alpaca_farm
 [submodule "other_repos/StruQ"]
 	path = other_repos/StruQ
 	url = https://github.com/Sizhe-Chen/StruQ
