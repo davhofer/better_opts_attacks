@@ -380,15 +380,17 @@ def _convert_to_secalign_format(
     input_conv,
     prompt_template,
     tokenizer,
-    harmful_inst = SECALIGN_COMMON_INSTRUCTION
+    harmful_inst = SECALIGN_COMMON_INSTRUCTION,
 ):
     assert isinstance(input_conv, list) and all([isinstance(conv_part, dict) for conv_part in input_conv])
     inst_str = deepcopy(input_conv[0]["content"])
     data_str = deepcopy(input_conv[1]["content"])
     if data_str[-1] != '.' and data_str[-1] != '!' and data_str[-1] != '?': data_str += '.'
     data_str += ' '     
-    data_str += attack_utility.ADV_PREFIX_INDICATOR + harmful_inst + " " + attack_utility.ADV_SUFFIX_INDICATOR
+    data_str += attack_utility.ADV_PREFIX_INDICATOR + " " + harmful_inst + " " + attack_utility.ADV_SUFFIX_INDICATOR
     static_string = prompt_template.format_map({"instruction": inst_str, "input": data_str})
-    input_conv = tokenizer.batch_decode(tokenizer([static_string])["input_ids"], clean_up_tokenization_spaces=False)[0]
-    return input_conv
+    attack_input_conv = tokenizer.batch_decode(tokenizer([static_string])["input_ids"], clean_up_tokenization_spaces=False)[0]
 
+    # assert (tokenizer(attack_input_conv, add_special_tokens=False, return_tensors="pt")["input_ids"] == tokenizer([static_string], return_tensors="pt")["input_ids"]).all()
+    
+    return attack_input_conv

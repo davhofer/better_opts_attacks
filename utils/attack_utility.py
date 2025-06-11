@@ -684,7 +684,7 @@ def target_logprobs(
 
 DEFAULT_TEXT_GENERATION_CONFIG = {
     "do_sample": False,
-    "max_new_tokens": 200
+    "max_new_tokens": 20
 }
 
 def default_best_choice_function(model, tokenizer, input_tokenized_data, best_tokens_sequences, logger, **kwargs):

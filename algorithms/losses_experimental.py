@@ -8,6 +8,7 @@ import random
 import copy
 import sys
 import time
+import pickle
 
 import utils.attack_utility as attack_utility
 import utils.experiment_logger as experiment_logger
@@ -688,6 +689,15 @@ def abs_grad_dolly_layer_weights(model, tokenizer, input_tokenized_data, logger)
     final_mean = torch.mean(torch.stack(example_mean_all), dim=0)
     return final_mean
 
+def _try_load_layer_weights_from_local_data(model, data_path="data/layer_weights_cache.pkl"):
+    with open(f"{data_path}", "rb") as data_path_pickle:
+        cached_object = pickle.load(data_path_pickle)
+    
+    if "lama" in model.config._name_or_path:
+        return cached_object['secalign_refactored/secalign_models/meta-llama/Meta-Llama-3-8B-Instruct']
+    elif "istral" in model.config._name_or_path:
+        return cached_object['secalign_refactored/secalign_models/mistralai/Mistral-7B-Instruct-v0.1']
+
 
 CACHED_DOLLY_LAYER_WEIGHT_OBJ = None
 def cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, masks_data, logger):
@@ -697,7 +707,10 @@ def cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, masks_da
             "tokens": input_points,
             "masks": masks_data
         }
-        CACHED_DOLLY_LAYER_WEIGHT_OBJ = abs_grad_dolly_layer_weights(model, tokenizer, input_tokenized_data, logger)
+        try:
+            CACHED_DOLLY_LAYER_WEIGHT_OBJ = abs_grad_dolly_layer_weights(model, tokenizer, input_tokenized_data, logger)
+        except Exception:
+            CACHED_DOLLY_LAYER_WEIGHT_OBJ = _try_load_layer_weights_from_local_data(model)
     if input_points.dim() == 1:
         input_points = torch.unsqueeze(input_points, dim=0)
     batch_size = input_points.shape[0]
