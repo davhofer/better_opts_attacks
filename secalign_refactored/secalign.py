@@ -8,21 +8,9 @@ from enum import Enum
 from typing import Union, List, Dict
 import sys
 
-from other_repos.SecAlign.config import (
-    DELIMITERS,
-    PROMPT_FORMAT,
-    SYS_INPUT,
-    TEST_INJECTED_PROMPT,
-    TEST_INJECTED_WORD
-)
-from other_repos.SecAlign.test import (
-    load_lora_model,
-
-)
-
 sys.path.append("..")
 from utils import attack_utility
-
+from . import config
 
 DEFENDED_MODEL_COMMON_PATH = "secalign_refactored/secalign_models"
 MODEL_REL_PATHS = {
@@ -46,6 +34,55 @@ MODEL_REL_PATHS = {
     ("meta-llama-instruct", "secalign"): "meta-llama/Meta-Llama-3-8B-Instruct_dpo_NaiveCompletion_2024-11-12-17-59-06-resized"
 }
 
+def load_model_and_tokenizer(model_path, tokenizer_path=None, device="cuda:0", **kwargs):
+    model = (
+        transformers.AutoModelForCausalLM.from_pretrained(
+            model_path, trust_remote_code=True, **kwargs
+        )
+        .to(device)
+        .eval()
+    )
+    tokenizer_path = model_path if tokenizer_path is None else tokenizer_path
+    tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True, use_fast=False)
+
+    if "oasst-sft-6-llama-30b" in tokenizer_path:
+        tokenizer.bos_token_id = 1
+        tokenizer.unk_token_id = 0
+    if "guanaco" in tokenizer_path:
+        tokenizer.eos_token_id = 2
+        tokenizer.unk_token_id = 0
+    if "llama-2" in tokenizer_path:
+        tokenizer.pad_token = tokenizer.unk_token
+        tokenizer.padding_side = "left"
+    if "falcon" in tokenizer_path:
+        tokenizer.padding_side = "left"
+    if "mistral" in tokenizer_path:
+        tokenizer.padding_side = "left"
+    if not tokenizer.pad_token:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    return model, tokenizer
+
+
+def load_lora_model(model_name_or_path, device='0', load_model=True, **kwargs):
+    configs = model_name_or_path.split('/')[-1].split('_') + ['Frontend-Delimiter-Placeholder', 'None']
+    for alignment in ['dpo', 'kto', 'orpo']:
+        base_model_index = model_name_or_path.find(alignment) - 1
+        if base_model_index > 0: break
+        else: base_model_index = False
+
+    base_model_path = model_name_or_path[:base_model_index] if base_model_index else model_name_or_path
+    frontend_delimiters = configs[1] if configs[1] in config.DELIMITERS else base_model_path.split('/')[-1]
+    training_attacks = configs[2]
+    if not load_model: return base_model_path, frontend_delimiters
+    model, tokenizer = load_model_and_tokenizer(base_model_path, low_cpu_mem_usage=True, use_cache=False, device="cuda:" + device, **kwargs)
+    
+    if 'Instruct' in model_name_or_path: tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.model_max_length = 512
+    if base_model_index: model = PeftModel.from_pretrained(model, model_name_or_path, is_trainable=False)
+    return model, tokenizer, frontend_delimiters, training_attacks
+
+
 def maybe_load_secalign_defended_model(model_name, defence, **kwargs):
     if (model_name, defence) in MODEL_REL_PATHS:
         model_path = os.path.join(DEFENDED_MODEL_COMMON_PATH, MODEL_REL_PATHS[(model_name, defence)])
@@ -53,7 +90,7 @@ def maybe_load_secalign_defended_model(model_name, defence, **kwargs):
     else:
         model = transformers.AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
         tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
-        return model, tokenizer, None
+        return model, tokenizer, None, None
 
 def secalign_filter(token_ids, **kwargs):
 
@@ -100,7 +137,7 @@ def _convert_to_secalign_format(
     input_conv,
     prompt_template,
     tokenizer,
-    harmful_inst = TEST_INJECTED_PROMPT
+    harmful_inst
 ):
     assert isinstance(input_conv, list) and all([isinstance(conv_part, dict) for conv_part in input_conv])
     inst_str = deepcopy(input_conv[0]["content"])

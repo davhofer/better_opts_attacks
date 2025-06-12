@@ -178,10 +178,13 @@ def adversarial_opt(
             all_logprobs_sequences.extend(logprobs_sequences)
             all_best_tokens_sequences.extend(best_tokens_sequences)
 
+            del logprobs_sequences, best_tokens_sequences
+            gc.collect()
+            torch.cuda.empty_cache()
+
             if attack_block != len(attack_steps) - 1:
                 input_tokenized_data = best_choice_function(model, tokenizer, input_tokenized_data, all_best_tokens_sequences, logger, logprobs_sequences=all_logprobs_sequences)
 
-            del logprobs_sequences, best_tokens_sequences
             torch.cuda.synchronize()
             gc.collect()
             torch.cuda.empty_cache()

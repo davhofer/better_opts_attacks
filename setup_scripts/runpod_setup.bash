@@ -23,7 +23,7 @@ pip3 install dill trl bitsandbytes
 
 cd "${WORKSPACE_DIR}/better_opts_attacks"
 
-huggingface-cli login --token ${HF_PASSWORD} --add-to-git-credential
+huggingface-cli login --token ${HF_PASSWORD}
 huggingface-cli download meta-llama/Meta-Llama-3-8B-Instruct --local-dir secalign_refactored/secalign_models/meta-llama/Meta-Llama-3-8B-Instruct
 huggingface-cli download mistralai/Mistral-7B-Instruct-v0.1 --local-dir secalign_refactored/secalign_models/mistralai/Mistral-7B-Instruct-v0.1
 
