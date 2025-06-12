@@ -21,19 +21,21 @@ for data_url in data_urls:
 model_big_path = "secalign_refactored/secalign_models"
 model_paths = []
 model_paths += [
-    'mistralai/Mistral-7B-Instruct-v0.1_dpo_NaiveCompletion_2024-11-12-17-59-37', # SecAlign Instruct adapters
-    'meta-llama/Meta-Llama-3-8B-Instruct_dpo_NaiveCompletion_2024-11-12-17-59-06',
+    'mistralai/Mistral-7B-Instruct-v0.1_dpo_NaiveCompletion_2025-03-12-12-01-27', # SecAlign Instruct adapters
+    'meta-llama/Meta-Llama-3-8B-Instruct_dpo_NaiveCompletion_2024-11-12-17-59-06-resized',
 ]
 model_paths += [
-    'huggyllama/llama-7b_SpclSpclSpcl_None_2024-06-02-00-00-00', # Undefended Alpaca models
-    'mistralai/Mistral-7B-v0.1_SpclSpclSpcl_None_2024-07-20-01-59-11',
-    'meta-llama/Meta-Llama-3-8B_SpclSpclSpcl_None_2024-08-09-17-02-02',
-    'huggyllama/llama-7b_SpclSpclSpcl_NaiveCompletion_2024-02-02-00-00-00', # StruQ Alpaca models
-    'mistralai/Mistral-7B-v0.1_SpclSpclSpcl_NaiveCompletion_2024-07-20-05-46-17',
-    'meta-llama/Meta-Llama-3-8B_SpclSpclSpcl_NaiveCompletion_2024-08-09-12-55-56',
-    'huggyllama/llama-7b_SpclSpclSpcl_None_2024-06-02-00-00-00_dpo_NaiveCompletion_2024-07-06-07-42-23', # SecAlign Alpaca adapters
-    'mistralai/Mistral-7B-v0.1_SpclSpclSpcl_None_2024-07-20-01-59-11_dpo_NaiveCompletion_2024-08-13-17-46-51',
-    'meta-llama/Meta-Llama-3-8B_SpclSpclSpcl_None_2024-08-09-17-02-02_dpo_NaiveCompletion_2024-08-09-21-28-53'
+    'huggyllama/llama-7b_SpclSpclSpcl_None_2025-03-12-01-01-20', # Undefended Alpaca models
+    'mistralai/Mistral-7B-v0.1_SpclSpclSpcl_None_2025-03-12-01-02-08',
+    'meta-llama/Meta-Llama-3-8B_SpclSpclSpcl_None_2025-03-12-01-02-14',
+
+    'huggyllama/llama-7b_SpclSpclSpcl_NaiveCompletion_2025-03-12-01-02-37', # StruQ Alpaca models
+    'mistralai/Mistral-7B-v0.1_SpclSpclSpcl_NaiveCompletion_2025-03-15-03-25-16',
+    'meta-llama/Meta-Llama-3-8B_SpclSpclSpcl_NaiveCompletion_2025-03-18-06-16-46-lr4e-6',
+
+    'huggyllama/llama-7b_SpclSpclSpcl_None_2025-03-12-01-01-20_dpo_NaiveCompletion_2025-03-12-05-33-03', # SecAlign Alpaca adapters
+    'mistralai/Mistral-7B-v0.1_SpclSpclSpcl_None_2025-03-12-01-02-08_dpo_NaiveCompletion_2025-03-14-18-26-14',
+    'meta-llama/Meta-Llama-3-8B_SpclSpclSpcl_None_2025-03-12-01-02-14_dpo_NaiveCompletion_2025-03-12-05-33-03'
 ]
 
 for model_path in model_paths:

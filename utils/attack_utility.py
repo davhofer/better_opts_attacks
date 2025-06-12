@@ -572,20 +572,14 @@ DEFAULT_GENERATION_PARAMS = {
 def bulk_logits_iter(
     model: transformers.AutoModelForCausalLM,
     data: torch.tensor,
-    batch_size=512,
+    batch_size=8,
     generation_params=DEFAULT_GENERATION_PARAMS,
 ):
-    """
-    Iterator version of bulk_logits that yields results one batch at a time
-    to reduce memory usage. Now supports past_key_values for prefix caching.
-    """
     with torch.no_grad():
         for i in range(0, len(data), batch_size):
             data_piece = data[i:i + batch_size]
             try:
-                logits = model(
-                    input_ids=data_piece.to(model.device), 
-                ).logits
+                logits = model(input_ids=data_piece.to(model.device)).logits
                 yield logits
                 gc.collect()
                 torch.cuda.empty_cache()
@@ -604,7 +598,10 @@ def bulk_logits_iter(
                     del sub_result
                     gc.collect()
                     torch.cuda.empty_cache()
-            
+                del sub_iterator
+                gc.collect()
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
             # Clean up memory after each batch
             gc.collect()
             torch.cuda.empty_cache()
