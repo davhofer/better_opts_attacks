@@ -636,11 +636,12 @@ class MultiAttentionGradHook:
             self.accumulate_gradients()
 
         target_mask = self.input_tokenized_data_list[0]["masks"]["target_mask"]
+        payload_mask = self.input_tokenized_data_list[0]["masks"]["payload_mask"]
         layer_wise_abs_grads_sums = []
         for layer_idx in range(self.num_layers):
             layer_wise_abs_grads_sums.append([])
             for per_ex_grad_val in self.grads:
-                layer_wise_abs_grads_sums[layer_idx].append(torch.abs(per_ex_grad_val[layer_idx][0][:, target_mask - 1, :]).mean(dim=-1).sum(dim=-1))
+                layer_wise_abs_grads_sums[layer_idx].append(torch.abs(per_ex_grad_val[layer_idx][0][:, target_mask - 1, :][:, :, payload_mask]).mean(dim=-1).sum(dim=-1))
         layer_wise_abs_grads_means = [torch.mean(torch.stack(layer_wise_abs_grads_sums[layer_idx]), dim=0) for layer_idx in range(self.num_layers)]
         return layer_wise_abs_grads_means
 
