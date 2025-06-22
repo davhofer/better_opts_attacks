@@ -59,8 +59,8 @@ def attack_secalign_dataset(
 
     initial_config = {
         "strategy_type": "random",
-        "prefix_length": 10,
-        "suffix_length": 10,
+        "prefix_length": 0,
+        "suffix_length": 20,
         "seed": int(time.time()) 
     }
 
@@ -71,7 +71,7 @@ def attack_secalign_dataset(
         "signal_function": losses_experimental.attention_metricized_signal_v2,
         "signal_kwargs": {
             "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
-            "layer_weight_strategy": losses_experimental.cached_abs_grad_dolly_layer_weights,
+            "layer_weight_strategy": losses_experimental.clip_cached_abs_grad_dolly_layer_weights,
             "ideal_attentions": losses_experimental.uniform_ideal_attentions,
             "ideal_attentions_kwargs": {
                 "attention_mask_strategy": "payload_only"
@@ -80,7 +80,7 @@ def attack_secalign_dataset(
         "true_loss_function": losses_experimental.attention_metricized_v2_true_loss,
         "true_loss_kwargs": {
             "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
-            "layer_weight_strategy": losses_experimental.cached_abs_grad_dolly_layer_weights,
+            "layer_weight_strategy": losses_experimental.clip_cached_abs_grad_dolly_layer_weights,
             "ideal_attentions": losses_experimental.uniform_ideal_attentions,
             "ideal_attentions_kwargs": {
                 "attention_mask_strategy": "payload_only"

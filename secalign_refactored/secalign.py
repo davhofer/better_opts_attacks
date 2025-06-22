@@ -43,7 +43,7 @@ def load_model_and_tokenizer(model_path, tokenizer_path=None, device="cuda:0", *
         .eval()
     )
     tokenizer_path = model_path if tokenizer_path is None else tokenizer_path
-    tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True, use_fast=False)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
 
     if "oasst-sft-6-llama-30b" in tokenizer_path:
         tokenizer.bos_token_id = 1
@@ -142,7 +142,7 @@ def _convert_to_secalign_format(
     assert isinstance(input_conv, list) and all([isinstance(conv_part, dict) for conv_part in input_conv])
     inst_str = deepcopy(input_conv[0]["content"])
     data_str = deepcopy(input_conv[1]["content"])
-    data_str += " " + attack_utility.ADV_PREFIX_INDICATOR + " " + harmful_inst + " " + attack_utility.ADV_SUFFIX_INDICATOR
+    data_str += " " + attack_utility.ADV_PREFIX_INDICATOR + " " + harmful_inst + " " + attack_utility.ADV_SUFFIX_INDICATOR + " "
     static_string = prompt_template.format_map({"instruction": inst_str, "input": data_str})
     input_conv = tokenizer.batch_decode(tokenizer([static_string])["input_ids"], clean_up_tokenization_spaces=False)[0]
     return input_conv

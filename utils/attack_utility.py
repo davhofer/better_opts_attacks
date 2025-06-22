@@ -700,10 +700,15 @@ def generate_valid_input_tokenized_data(
     init_config,
     logger: experiment_logger.ExperimentLogger,
     *,
-    max_attempts = 100
+    max_attempts = 10000
 ):
     new_init_config = copy.deepcopy(init_config)
     num_init_tries = 0
+    # if new_init_config["prefix_length"] > 0:
+    #     new_init_config["prefix_length"] = new_init_config["prefix_length"] - 1
+    # if new_init_config["suffix_length"] > 0:
+    #     new_init_config["suffix_length"] = new_init_config["suffix_length"] - 1
+
     while num_init_tries < max_attempts:
         try:
             adv_prefix_init, adv_suffix_init = initialize_adversarial_strings(tokenizer, new_init_config)

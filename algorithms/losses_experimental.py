@@ -641,7 +641,7 @@ class MultiAttentionGradHook:
         for layer_idx in range(self.num_layers):
             layer_wise_abs_grads_sums.append([])
             for per_ex_grad_val in self.grads:
-                layer_wise_abs_grads_sums[layer_idx].append(torch.abs(per_ex_grad_val[layer_idx][0][:, target_mask - 1, :][:, :, payload_mask]).mean(dim=-1).sum(dim=-1))
+                layer_wise_abs_grads_sums[layer_idx].append(torch.abs(torch.tril(per_ex_grad_val[layer_idx][0])[:, target_mask - 1, :]).mean(dim=-1).sum(dim=-1))
         layer_wise_abs_grads_means = [torch.mean(torch.stack(layer_wise_abs_grads_sums[layer_idx]), dim=0) for layer_idx in range(self.num_layers)]
         return layer_wise_abs_grads_means
 
@@ -719,7 +719,7 @@ def cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, masks_da
     return final_tensor
 
 CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ = None
-def clip_cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, masks_data, logger, threshold=0.7):
+def clip_cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, masks_data, logger, threshold=None, quantile=0.75):
     global CACHED_DOLLY_LAYER_WEIGHT_OBJ, CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ
     if CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ is None:
         if CACHED_DOLLY_LAYER_WEIGHT_OBJ is None:
@@ -729,6 +729,8 @@ def clip_cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, mas
             }
             CACHED_DOLLY_LAYER_WEIGHT_OBJ = abs_grad_dolly_layer_weights(model, tokenizer, input_tokenized_data, logger)
         CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ = CACHED_DOLLY_LAYER_WEIGHT_OBJ.clone()
+        if threshold is None:
+            threshold = torch.quantile(CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ.to(torch.float), quantile)
         CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ[CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ < threshold] = 0
     if input_points.dim() == 1:
         input_points = torch.unsqueeze(input_points, dim=0)
