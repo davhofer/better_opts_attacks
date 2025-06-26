@@ -8,6 +8,7 @@ import random
 import copy
 import sys
 import time
+import pickle
 
 import utils.attack_utility as attack_utility
 import utils.experiment_logger as experiment_logger
@@ -635,11 +636,12 @@ class MultiAttentionGradHook:
             self.accumulate_gradients()
 
         target_mask = self.input_tokenized_data_list[0]["masks"]["target_mask"]
+        payload_mask = self.input_tokenized_data_list[0]["masks"]["payload_mask"]
         layer_wise_abs_grads_sums = []
         for layer_idx in range(self.num_layers):
             layer_wise_abs_grads_sums.append([])
             for per_ex_grad_val in self.grads:
-                layer_wise_abs_grads_sums[layer_idx].append(torch.abs(per_ex_grad_val[layer_idx][0][:, target_mask - 1, :]).mean(dim=-1).sum(dim=-1))
+                layer_wise_abs_grads_sums[layer_idx].append(torch.abs(torch.tril(per_ex_grad_val[layer_idx][0])[:, target_mask - 1, :]).mean(dim=-1).sum(dim=-1))
         layer_wise_abs_grads_means = [torch.mean(torch.stack(layer_wise_abs_grads_sums[layer_idx]), dim=0) for layer_idx in range(self.num_layers)]
         return layer_wise_abs_grads_means
 
@@ -688,6 +690,15 @@ def abs_grad_dolly_layer_weights(model, tokenizer, input_tokenized_data, logger)
     final_mean = torch.mean(torch.stack(example_mean_all), dim=0)
     return final_mean
 
+def _try_load_layer_weights_from_local_data(model, data_path="data/layer_weights_cache.pkl"):
+    with open(f"{data_path}", "rb") as data_path_pickle:
+        cached_object = pickle.load(data_path_pickle)
+    
+    if "lama" in model.config._name_or_path:
+        return cached_object['secalign_refactored/secalign_models/meta-llama/Meta-Llama-3-8B-Instruct']
+    elif "istral" in model.config._name_or_path:
+        return cached_object['secalign_refactored/secalign_models/mistralai/Mistral-7B-Instruct-v0.1']
+
 
 CACHED_DOLLY_LAYER_WEIGHT_OBJ = None
 def cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, masks_data, logger):
@@ -697,7 +708,10 @@ def cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, masks_da
             "tokens": input_points,
             "masks": masks_data
         }
-        CACHED_DOLLY_LAYER_WEIGHT_OBJ = abs_grad_dolly_layer_weights(model, tokenizer, input_tokenized_data, logger)
+        try:
+            CACHED_DOLLY_LAYER_WEIGHT_OBJ = abs_grad_dolly_layer_weights(model, tokenizer, input_tokenized_data, logger)
+        except Exception:
+            CACHED_DOLLY_LAYER_WEIGHT_OBJ = _try_load_layer_weights_from_local_data(model)
     if input_points.dim() == 1:
         input_points = torch.unsqueeze(input_points, dim=0)
     batch_size = input_points.shape[0]
@@ -705,7 +719,7 @@ def cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, masks_da
     return final_tensor
 
 CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ = None
-def clip_cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, masks_data, logger, threshold=0.7):
+def clip_cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, masks_data, logger, threshold=None, quantile=0.75):
     global CACHED_DOLLY_LAYER_WEIGHT_OBJ, CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ
     if CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ is None:
         if CACHED_DOLLY_LAYER_WEIGHT_OBJ is None:
@@ -715,6 +729,8 @@ def clip_cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, mas
             }
             CACHED_DOLLY_LAYER_WEIGHT_OBJ = abs_grad_dolly_layer_weights(model, tokenizer, input_tokenized_data, logger)
         CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ = CACHED_DOLLY_LAYER_WEIGHT_OBJ.clone()
+        if threshold is None:
+            threshold = torch.quantile(CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ.to(torch.float), quantile)
         CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ[CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ < threshold] = 0
     if input_points.dim() == 1:
         input_points = torch.unsqueeze(input_points, dim=0)

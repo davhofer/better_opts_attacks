@@ -572,20 +572,14 @@ DEFAULT_GENERATION_PARAMS = {
 def bulk_logits_iter(
     model: transformers.AutoModelForCausalLM,
     data: torch.tensor,
-    batch_size=512,
+    batch_size=8,
     generation_params=DEFAULT_GENERATION_PARAMS,
 ):
-    """
-    Iterator version of bulk_logits that yields results one batch at a time
-    to reduce memory usage. Now supports past_key_values for prefix caching.
-    """
     with torch.no_grad():
         for i in range(0, len(data), batch_size):
             data_piece = data[i:i + batch_size]
             try:
-                logits = model(
-                    input_ids=data_piece.to(model.device), 
-                ).logits
+                logits = model(input_ids=data_piece.to(model.device)).logits
                 yield logits
                 gc.collect()
                 torch.cuda.empty_cache()
@@ -604,7 +598,10 @@ def bulk_logits_iter(
                     del sub_result
                     gc.collect()
                     torch.cuda.empty_cache()
-            
+                del sub_iterator
+                gc.collect()
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
             # Clean up memory after each batch
             gc.collect()
             torch.cuda.empty_cache()
@@ -684,7 +681,7 @@ def target_logprobs(
 
 DEFAULT_TEXT_GENERATION_CONFIG = {
     "do_sample": False,
-    "max_new_tokens": 200
+    "max_new_tokens": 20
 }
 
 def default_best_choice_function(model, tokenizer, input_tokenized_data, best_tokens_sequences, logger, **kwargs):
@@ -703,10 +700,15 @@ def generate_valid_input_tokenized_data(
     init_config,
     logger: experiment_logger.ExperimentLogger,
     *,
-    max_attempts = 100
+    max_attempts = 10000
 ):
     new_init_config = copy.deepcopy(init_config)
     num_init_tries = 0
+    # if new_init_config["prefix_length"] > 0:
+    #     new_init_config["prefix_length"] = new_init_config["prefix_length"] - 1
+    # if new_init_config["suffix_length"] > 0:
+    #     new_init_config["suffix_length"] = new_init_config["suffix_length"] - 1
+
     while num_init_tries < max_attempts:
         try:
             adv_prefix_init, adv_suffix_init = initialize_adversarial_strings(tokenizer, new_init_config)
