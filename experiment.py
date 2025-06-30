@@ -102,38 +102,30 @@ def attack_secalign_dataset(
         "forward_eval_candidates": 512,
         "substitution_validity_function": secalign.secalign_filter
     }
-    gcg_step = {
-        "attack_algorithm": "custom_gcg",
-        "attack_hyperparameters": gcg_hyperparams
-    }
-
-    attack_config = {
+    adversarial_parameters_dict_baseline = {
         "input_tokenized_data": input_tokenized_data,
-        "attack_algorithm": "sequential",
-        "attack_hyperparameters": [
-            weighted_attention_step,
-            gcg_step
-        ],
+        "attack_algorithm": "custom_gcg",
+        "attack_hyperparameters": gcg_baseline_params,
         "early_stop": False,
         "eval_every_step": False,
         "to_cache_logits": True,
-        "to_cache_attentions": True
+        "to_cache_attentions": True,
     }
 
-    logger.log(attack_config)
-    loss_sequences_attack, best_output_sequences_attack = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, attack_config, logger)
-    logger.log(loss_sequences_attack)
-    logger.log(best_output_sequences_attack)
-    final_inputs_strings_attack = tokenizer.batch_decode(best_output_sequences_attack, clean_up_tokenization_spaces=False)
-    logger.log(final_inputs_strings_attack)
+    logger.log(adversarial_parameters_dict_baseline)
+    loss_sequences_baseline, best_output_sequences_baseline = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, adversarial_parameters_dict_baseline, logger)
+    logger.log(loss_sequences_baseline)
+    logger.log(best_output_sequences_baseline)
+    final_inputs_strings_baseline = tokenizer.batch_decode(best_output_sequences_baseline, clean_up_tokenization_spaces=False)
+    logger.log(final_inputs_strings_baseline)
 
-    del loss_sequences_attack, best_output_sequences_attack, final_inputs_strings_attack
+    del loss_sequences_baseline, best_output_sequences_baseline, final_inputs_strings_baseline
     torch.cuda.synchronize()
     gc.collect()
     torch.cuda.empty_cache()
 
     gcg_baseline_params = {
-        "signal_function": gcg.og_gcg_signal,
+        "signal_function": gcg.rand_gcg_signal,
         "max_steps": 500,
         "topk": 256,
         "forward_eval_candidates": 512,
