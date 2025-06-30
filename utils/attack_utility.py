@@ -756,6 +756,8 @@ def _get_layer_obj(model):
         return model.base_model.model.model.layers
     elif isinstance(model, transformers.LlamaPreTrainedModel):
         return model.model.layers
+    elif isinstance(model, transformers.MistralPreTrainedModel):
+        return model.model.layers
 
 
 DEFAULT_MAXIMUM_BATCH_SIZE = 512

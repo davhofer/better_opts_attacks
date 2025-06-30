@@ -219,7 +219,8 @@ if __name__ == "__main__":
             ]
             for x in input_prompts
         ]
-    indices_to_sample = [203, 105, 159, 170, 187, 15, 63, 205, 190, 109, 147, 93, 134, 146, 25, 11, 115]
+    indices_to_sample = [159, 82, 133, 83, 185, 101, 96, 63, 106, 25, 11, 115]
+    # indices_to_sample = [203, 105, 159, 170, 187, 15, 63, 205, 190, 109, 147, 93, 134, 146, 25, 11, 115]
     indices_to_exclude = [50, 152, 125, 162, 88, 171, 123, 39, 55, 51]
     indices_to_sample = [x for x in indices_to_sample if not x in indices_to_exclude]
     print(indices_to_sample)
