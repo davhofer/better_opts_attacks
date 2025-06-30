@@ -59,73 +59,86 @@ def attack_secalign_dataset(
 
     initial_config = {
         "strategy_type": "random",
-        "prefix_length": 5,
-        "suffix_length": 0,
+        "prefix_length": 0,
+        "suffix_length": 20,
         "seed": int(time.time()) 
     }
 
     input_tokenized_data, true_init_config = attack_utility.generate_valid_input_tokenized_data(tokenizer, input_conv, target, initial_config, logger)
     logger.log(true_init_config)
 
-    weighted_attention_hyperparams = {
-        "signal_function": losses_experimental.attention_metricized_signal_v2,
-        "signal_kwargs": {
-            "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
-            "layer_weight_strategy": losses_experimental.clip_cached_abs_grad_dolly_layer_weights,
-            "ideal_attentions": losses_experimental.uniform_ideal_attentions,
-            "ideal_attentions_kwargs": {
-                "attention_mask_strategy": "payload_only"
-            }
-        },
-        "true_loss_function": losses_experimental.attention_metricized_v2_true_loss,
-        "true_loss_kwargs": {
-            "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
-            "layer_weight_strategy": losses_experimental.clip_cached_abs_grad_dolly_layer_weights,
-            "ideal_attentions": losses_experimental.uniform_ideal_attentions,
-            "ideal_attentions_kwargs": {
-                "attention_mask_strategy": "payload_only"
-            }
-        },
-        "max_steps": 350,
-        "forward_eval_candidates": 512,
-        "topk": 256,
-        "substitution_validity_function": secalign.secalign_filter
-    }
-    weighted_attention_step = {
-        "attack_algorithm": "custom_gcg",
-        "attack_hyperparameters": weighted_attention_hyperparams
-    }
+    layer_weights_to_compare = [1, -1, "uniform", losses_experimental.cached_abs_grad_dolly_layer_weights, losses_experimental.clip_cached_abs_grad_dolly_layer_weights]
+    
+    for layer_weight_idx, layer_weight_to_compare in enumerate(layer_weights_to_compare):
 
-    gcg_hyperparams = {
-        "max_steps": 150,
-        "topk": 256,
-        "forward_eval_candidates": 512,
-        "substitution_validity_function": secalign.secalign_filter
-    }
-    adversarial_parameters_dict_baseline = {
-        "input_tokenized_data": input_tokenized_data,
-        "attack_algorithm": "custom_gcg",
-        "attack_hyperparameters": gcg_baseline_params,
-        "early_stop": False,
-        "eval_every_step": False,
-        "to_cache_logits": True,
-        "to_cache_attentions": True,
-    }
+        logger.log(layer_weight_idx)
+        weighted_attention_hyperparams = {
+            "signal_function": losses_experimental.attention_metricized_signal_v2,
+            "signal_kwargs": {
+                "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
+                "layer_weight_strategy": layer_weight_to_compare,
+                "ideal_attentions": losses_experimental.uniform_ideal_attentions,
+                "ideal_attentions_kwargs": {
+                    "attention_mask_strategy": "payload_only"
+                }
+            },
+            "true_loss_function": losses_experimental.attention_metricized_v2_true_loss,
+            "true_loss_kwargs": {
+                "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
+                "layer_weight_strategy": layer_weight_to_compare,
+                "ideal_attentions": losses_experimental.uniform_ideal_attentions,
+                "ideal_attentions_kwargs": {
+                    "attention_mask_strategy": "payload_only"
+                }
+            },
+            "max_steps": 350,
+            "forward_eval_candidates": 512,
+            "topk": 256,
+            "substitution_validity_function": secalign.secalign_filter
+        }
+        weighted_attention_step = {
+            "attack_algorithm": "custom_gcg",
+            "attack_hyperparameters": weighted_attention_hyperparams
+        }
 
-    logger.log(adversarial_parameters_dict_baseline)
-    loss_sequences_baseline, best_output_sequences_baseline = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, adversarial_parameters_dict_baseline, logger)
-    logger.log(loss_sequences_baseline)
-    logger.log(best_output_sequences_baseline)
-    final_inputs_strings_baseline = tokenizer.batch_decode(best_output_sequences_baseline, clean_up_tokenization_spaces=False)
-    logger.log(final_inputs_strings_baseline)
+        gcg_hyperparams = {
+            "max_steps": 150,
+            "topk": 256,
+            "forward_eval_candidates": 512,
+            "substitution_validity_function": secalign.secalign_filter
+        }
+        gcg_step = {
+            "attack_algorithm": "custom_gcg",
+            "attack_hyperparameters": gcg_hyperparams
+        }
 
-    del loss_sequences_baseline, best_output_sequences_baseline, final_inputs_strings_baseline
-    torch.cuda.synchronize()
-    gc.collect()
-    torch.cuda.empty_cache()
+        attack_config = {
+            "input_tokenized_data": input_tokenized_data,
+            "attack_algorithm": "sequential",
+            "attack_hyperparameters": [
+                weighted_attention_step,
+                gcg_step
+            ],
+            "early_stop": False,
+            "eval_every_step": False,
+            "to_cache_logits": True,
+            "to_cache_attentions": True
+        }
+
+        logger.log(attack_config, layer_weight_idx=layer_weight_idx)
+        loss_sequences_attack, best_output_sequences_attack = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, attack_config, logger)
+        logger.log(loss_sequences_attack, layer_weight_idx=layer_weight_idx)
+        logger.log(best_output_sequences_attack, layer_weight_idx=layer_weight_idx)
+        final_inputs_strings_attack = tokenizer.batch_decode(best_output_sequences_attack, clean_up_tokenization_spaces=False)
+        logger.log(final_inputs_strings_attack, layer_weight_idx=layer_weight_idx)
+
+        del loss_sequences_attack, best_output_sequences_attack, final_inputs_strings_attack
+        torch.cuda.synchronize()
+        gc.collect()
+        torch.cuda.empty_cache()
 
     gcg_baseline_params = {
-        "signal_function": gcg.rand_gcg_signal,
+        "signal_function": gcg.og_gcg_signal,
         "max_steps": 500,
         "topk": 256,
         "forward_eval_candidates": 512,
