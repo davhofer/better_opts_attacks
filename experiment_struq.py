@@ -59,8 +59,8 @@ def attack_secalign_dataset(
 
     initial_config = {
         "strategy_type": "random",
-        "prefix_length": 20,
-        "suffix_length": 0,
+        "prefix_length": 0,
+        "suffix_length": 20,
         "seed": int(time.time()) 
     }
 
@@ -89,7 +89,7 @@ def attack_secalign_dataset(
         "max_steps": 350,
         "forward_eval_candidates": 512,
         "topk": 256,
-        "substitution_validity_function": secalign.secalign_filter
+        "substitution_validity_function": secalign.struq_filter
     }
     weighted_attention_step = {
         "attack_algorithm": "custom_gcg",
@@ -100,7 +100,7 @@ def attack_secalign_dataset(
         "max_steps": 150,
         "topk": 256,
         "forward_eval_candidates": 512,
-        "substitution_validity_function": secalign.secalign_filter
+        "substitution_validity_function": secalign.struq_filter
     }
     gcg_step = {
         "attack_algorithm": "custom_gcg",
@@ -132,34 +132,34 @@ def attack_secalign_dataset(
     gc.collect()
     torch.cuda.empty_cache()
 
-    gcg_baseline_params = {
-        "signal_function": gcg.og_gcg_signal,
-        "max_steps": 500,
-        "topk": 256,
-        "forward_eval_candidates": 512,
-        "substitution_validity_function": secalign.secalign_filter
-    }
-    adversarial_parameters_dict_baseline = {
-        "input_tokenized_data": input_tokenized_data,
-        "attack_algorithm": "custom_gcg",
-        "attack_hyperparameters": gcg_baseline_params,
-        "early_stop": False,
-        "eval_every_step": False,
-        "to_cache_logits": True,
-        "to_cache_attentions": True,
-    }
+    # gcg_baseline_params = {
+    #     "signal_function": gcg.og_gcg_signal,
+    #     "max_steps": 500,
+    #     "topk": 256,
+    #     "forward_eval_candidates": 512,
+    #     "substitution_validity_function": secalign.struq_filter
+    # }
+    # adversarial_parameters_dict_baseline = {
+    #     "input_tokenized_data": input_tokenized_data,
+    #     "attack_algorithm": "custom_gcg",
+    #     "attack_hyperparameters": gcg_baseline_params,
+    #     "early_stop": False,
+    #     "eval_every_step": False,
+    #     "to_cache_logits": True,
+    #     "to_cache_attentions": True,
+    # }
 
-    logger.log(adversarial_parameters_dict_baseline)
-    loss_sequences_baseline, best_output_sequences_baseline = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, adversarial_parameters_dict_baseline, logger)
-    logger.log(loss_sequences_baseline)
-    logger.log(best_output_sequences_baseline)
-    final_inputs_strings_baseline = tokenizer.batch_decode(best_output_sequences_baseline, clean_up_tokenization_spaces=False)
-    logger.log(final_inputs_strings_baseline)
+    # logger.log(adversarial_parameters_dict_baseline)
+    # loss_sequences_baseline, best_output_sequences_baseline = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, adversarial_parameters_dict_baseline, logger)
+    # logger.log(loss_sequences_baseline)
+    # logger.log(best_output_sequences_baseline)
+    # final_inputs_strings_baseline = tokenizer.batch_decode(best_output_sequences_baseline, clean_up_tokenization_spaces=False)
+    # logger.log(final_inputs_strings_baseline)
 
-    del loss_sequences_baseline, best_output_sequences_baseline, final_inputs_strings_baseline
-    torch.cuda.synchronize()
-    gc.collect()
-    torch.cuda.empty_cache()
+    # del loss_sequences_baseline, best_output_sequences_baseline, final_inputs_strings_baseline
+    # torch.cuda.synchronize()
+    # gc.collect()
+    # torch.cuda.empty_cache()
     
 
 def run_secalign_eval_on_single_gpu(expt_folder_prefix: str, model_name, defence, self_device_idx, alpacaeval_dataset, example_indices):
@@ -219,7 +219,7 @@ if __name__ == "__main__":
             ]
             for x in input_prompts
         ]
-    indices_to_sample = [83, 167, 170, 50, 133, 82, 159, 105, 152, 203, 96, 125, 191, 15, 187, 162, 6, 88, 101, 185, 156, 109, 171, 195, 123, 190, 205, 158, 163, 178, 63, 134, 39, 197, 37, 95, 177, 93, 10, 147, 55, 115, 11, 128, 25, 189, 113, 106, 51, 146]
+    indices_to_sample = [203, 105, 159, 170, 187, 15, 63, 205, 190, 109, 147, 93, 134, 146, 25, 11, 115]
     indices_to_exclude = [50, 152, 125, 162, 88, 171, 123, 39, 55, 51]
     indices_to_sample = [x for x in indices_to_sample if not x in indices_to_exclude]
     print(indices_to_sample)
