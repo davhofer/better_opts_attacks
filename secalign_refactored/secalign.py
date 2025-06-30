@@ -60,9 +60,16 @@ def load_model_and_tokenizer(model_path, tokenizer_path=None, device="cuda:0", *
         tokenizer.padding_side = "left"
     if not tokenizer.pad_token:
         tokenizer.pad_token = tokenizer.eos_token
-
+    
     return model, tokenizer
 
+def _form_chat_template_from_frontend_delimiters(frontend_delimiters):
+    formatter = config.PROMPT_FORMAT[frontend_delimiters]["prompt_input"]
+    return (
+        formatter
+        .replace("{instruction}", "{{ messages[0]['content'] }}")
+        .replace("{input}", "{{ messages[1]['content'] }}")
+    )
 
 def load_lora_model(model_name_or_path, device='0', load_model=True, **kwargs):
     configs = model_name_or_path.split('/')[-1].split('_') + ['Frontend-Delimiter-Placeholder', 'None']
@@ -77,6 +84,30 @@ def load_lora_model(model_name_or_path, device='0', load_model=True, **kwargs):
     if not load_model: return base_model_path, frontend_delimiters
     model, tokenizer = load_model_and_tokenizer(base_model_path, low_cpu_mem_usage=True, use_cache=False, device="cuda:" + device, **kwargs)
     
+    try:
+        _ = tokenizer.apply_chat_template([
+            {
+                "role": "system",
+                "content": "ABC"
+            },
+            {
+                "role": "user",
+                "content": "DEF"
+            }
+        ])
+    except Exception:
+        tokenizer.chat_template = _form_chat_template_from_frontend_delimiters(frontend_delimiters)
+        _ = tokenizer.apply_chat_template([
+            {
+                "role": "system",
+                "content": "ABC"
+            },
+            {
+                "role": "user",
+                "content": "DEF"
+            }
+        ])
+
     if 'Instruct' in model_name_or_path: tokenizer.pad_token = tokenizer.eos_token
     tokenizer.model_max_length = 512
     if base_model_index: model = PeftModel.from_pretrained(model, model_name_or_path, is_trainable=False)

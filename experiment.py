@@ -59,8 +59,8 @@ def attack_secalign_dataset(
 
     initial_config = {
         "strategy_type": "random",
-        "prefix_length": 0,
-        "suffix_length": 20,
+        "prefix_length": 5,
+        "suffix_length": 0,
         "seed": int(time.time()) 
     }
 
