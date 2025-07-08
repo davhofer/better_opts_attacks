@@ -154,13 +154,13 @@ def struq_filter(token_ids, **kwargs):
 
     if masks_data is None:
         decoded_string = tokenizer.decode(token_ids)
-        return not any([spec_token_id in decoded_string for spec_token_id in tokenizer.get_added_vocab()])
+        return not any([spec_token_id in decoded_string for spec_token_id in list(tokenizer.get_added_vocab().keys()) + config.FILTERED_TOKENS])
     prefix_mask = masks_data["prefix_mask"]
     suffix_mask = masks_data["suffix_mask"]
     decoded_prefix = tokenizer.decode(token_ids[prefix_mask])
     decoded_suffix = tokenizer.decode(token_ids[suffix_mask])
-    prefix_contains_specs = any([spec_token_id in decoded_prefix for spec_token_id in tokenizer.get_added_vocab()])
-    suffix_contains_specs = any([spec_token_id in decoded_suffix for spec_token_id in tokenizer.get_added_vocab()])
+    prefix_contains_specs = any([spec_token_id in decoded_prefix for spec_token_id in list(tokenizer.get_added_vocab().keys()) + config.FILTERED_TOKENS])
+    suffix_contains_specs = any([spec_token_id in decoded_suffix for spec_token_id in list(tokenizer.get_added_vocab().keys()) + config.FILTERED_TOKENS])
 
     return not (prefix_contains_specs or suffix_contains_specs)
 

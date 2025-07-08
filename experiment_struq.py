@@ -132,34 +132,34 @@ def attack_secalign_dataset(
     gc.collect()
     torch.cuda.empty_cache()
 
-    # gcg_baseline_params = {
-    #     "signal_function": gcg.og_gcg_signal,
-    #     "max_steps": 500,
-    #     "topk": 256,
-    #     "forward_eval_candidates": 512,
-    #     "substitution_validity_function": secalign.struq_filter
-    # }
-    # adversarial_parameters_dict_baseline = {
-    #     "input_tokenized_data": input_tokenized_data,
-    #     "attack_algorithm": "custom_gcg",
-    #     "attack_hyperparameters": gcg_baseline_params,
-    #     "early_stop": False,
-    #     "eval_every_step": False,
-    #     "to_cache_logits": True,
-    #     "to_cache_attentions": True,
-    # }
+    gcg_baseline_params = {
+        "signal_function": gcg.og_gcg_signal,
+        "max_steps": 500,
+        "topk": 256,
+        "forward_eval_candidates": 512,
+        "substitution_validity_function": secalign.struq_filter
+    }
+    adversarial_parameters_dict_baseline = {
+        "input_tokenized_data": input_tokenized_data,
+        "attack_algorithm": "custom_gcg",
+        "attack_hyperparameters": gcg_baseline_params,
+        "early_stop": False,
+        "eval_every_step": False,
+        "to_cache_logits": True,
+        "to_cache_attentions": True,
+    }
 
-    # logger.log(adversarial_parameters_dict_baseline)
-    # loss_sequences_baseline, best_output_sequences_baseline = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, adversarial_parameters_dict_baseline, logger)
-    # logger.log(loss_sequences_baseline)
-    # logger.log(best_output_sequences_baseline)
-    # final_inputs_strings_baseline = tokenizer.batch_decode(best_output_sequences_baseline, clean_up_tokenization_spaces=False)
-    # logger.log(final_inputs_strings_baseline)
+    logger.log(adversarial_parameters_dict_baseline)
+    loss_sequences_baseline, best_output_sequences_baseline = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, adversarial_parameters_dict_baseline, logger)
+    logger.log(loss_sequences_baseline)
+    logger.log(best_output_sequences_baseline)
+    final_inputs_strings_baseline = tokenizer.batch_decode(best_output_sequences_baseline, clean_up_tokenization_spaces=False)
+    logger.log(final_inputs_strings_baseline)
 
-    # del loss_sequences_baseline, best_output_sequences_baseline, final_inputs_strings_baseline
-    # torch.cuda.synchronize()
-    # gc.collect()
-    # torch.cuda.empty_cache()
+    del loss_sequences_baseline, best_output_sequences_baseline, final_inputs_strings_baseline
+    torch.cuda.synchronize()
+    gc.collect()
+    torch.cuda.empty_cache()
     
 
 def run_secalign_eval_on_single_gpu(expt_folder_prefix: str, model_name, defence, self_device_idx, alpacaeval_dataset, example_indices):
