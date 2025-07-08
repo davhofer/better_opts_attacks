@@ -60,9 +60,16 @@ def load_model_and_tokenizer(model_path, tokenizer_path=None, device="cuda:0", *
         tokenizer.padding_side = "left"
     if not tokenizer.pad_token:
         tokenizer.pad_token = tokenizer.eos_token
-
+    
     return model, tokenizer
 
+def _form_chat_template_from_frontend_delimiters(frontend_delimiters):
+    formatter = config.PROMPT_FORMAT[frontend_delimiters]["prompt_input"]
+    return (
+        formatter
+        .replace("{instruction}", "{{ messages[0]['content'] }}")
+        .replace("{input}", "{{ messages[1]['content'] }}")
+    )
 
 def load_lora_model(model_name_or_path, device='0', load_model=True, **kwargs):
     configs = model_name_or_path.split('/')[-1].split('_') + ['Frontend-Delimiter-Placeholder', 'None']
@@ -74,9 +81,33 @@ def load_lora_model(model_name_or_path, device='0', load_model=True, **kwargs):
     base_model_path = model_name_or_path[:base_model_index] if base_model_index else model_name_or_path
     frontend_delimiters = configs[1] if configs[1] in config.DELIMITERS else base_model_path.split('/')[-1]
     training_attacks = configs[2]
-    if not load_model: return base_model_path, frontend_delimiters
+    if not load_model: return base_model_path, None, frontend_delimiters, None
     model, tokenizer = load_model_and_tokenizer(base_model_path, low_cpu_mem_usage=True, use_cache=False, device="cuda:" + device, **kwargs)
     
+    try:
+        _ = tokenizer.apply_chat_template([
+            {
+                "role": "system",
+                "content": "ABC"
+            },
+            {
+                "role": "user",
+                "content": "DEF"
+            }
+        ])
+    except Exception:
+        tokenizer.chat_template = _form_chat_template_from_frontend_delimiters(frontend_delimiters)
+        _ = tokenizer.apply_chat_template([
+            {
+                "role": "system",
+                "content": "ABC"
+            },
+            {
+                "role": "user",
+                "content": "DEF"
+            }
+        ])
+
     if 'Instruct' in model_name_or_path: tokenizer.pad_token = tokenizer.eos_token
     tokenizer.model_max_length = 512
     if base_model_index: model = PeftModel.from_pretrained(model, model_name_or_path, is_trainable=False)
@@ -104,13 +135,13 @@ def secalign_filter(token_ids, **kwargs):
 
     if masks_data is None:
         decoded_string = tokenizer.decode(token_ids)
-        return not any([spec_token_id in decoded_string for spec_token_id in tokenizer.get_added_vocab()])
+        return not any([spec_token_id in decoded_string for spec_token_id in list(tokenizer.get_added_vocab().keys()) + config.FILTERED_TOKENS])
     prefix_mask = masks_data["prefix_mask"]
     suffix_mask = masks_data["suffix_mask"]
     decoded_prefix = tokenizer.decode(token_ids[prefix_mask])
     decoded_suffix = tokenizer.decode(token_ids[suffix_mask])
-    prefix_contains_specs = any([spec_token_id in decoded_prefix for spec_token_id in tokenizer.get_added_vocab()])
-    suffix_contains_specs = any([spec_token_id in decoded_suffix for spec_token_id in tokenizer.get_added_vocab()])
+    prefix_contains_specs = any([spec_token_id in decoded_prefix for spec_token_id in list(tokenizer.get_added_vocab().keys()) + config.FILTERED_TOKENS])
+    suffix_contains_specs = any([spec_token_id in decoded_suffix for spec_token_id in list(tokenizer.get_added_vocab().keys()) + config.FILTERED_TOKENS])
     
     return (not (prefix_contains_specs or suffix_contains_specs)) and is_invertible
 

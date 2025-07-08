@@ -59,7 +59,7 @@ def attack_secalign_dataset(
 
     initial_config = {
         "strategy_type": "random",
-        "prefix_length": 0,
+        "prefix_length": 10,
         "suffix_length": 20,
         "seed": int(time.time()) 
     }
@@ -102,30 +102,38 @@ def attack_secalign_dataset(
         "forward_eval_candidates": 512,
         "substitution_validity_function": secalign.secalign_filter
     }
-    adversarial_parameters_dict_baseline = {
-        "input_tokenized_data": input_tokenized_data,
+    gcg_step = {
         "attack_algorithm": "custom_gcg",
-        "attack_hyperparameters": gcg_baseline_params,
+        "attack_hyperparameters": gcg_hyperparams
+    }
+
+    attack_config = {
+        "input_tokenized_data": input_tokenized_data,
+        "attack_algorithm": "sequential",
+        "attack_hyperparameters": [
+            weighted_attention_step,
+            gcg_step
+        ],
         "early_stop": False,
         "eval_every_step": False,
         "to_cache_logits": True,
-        "to_cache_attentions": True,
+        "to_cache_attentions": True
     }
 
-    logger.log(adversarial_parameters_dict_baseline)
-    loss_sequences_baseline, best_output_sequences_baseline = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, adversarial_parameters_dict_baseline, logger)
-    logger.log(loss_sequences_baseline)
-    logger.log(best_output_sequences_baseline)
-    final_inputs_strings_baseline = tokenizer.batch_decode(best_output_sequences_baseline, clean_up_tokenization_spaces=False)
-    logger.log(final_inputs_strings_baseline)
+    logger.log(attack_config)
+    loss_sequences_attack, best_output_sequences_attack = adversarial_opt.adversarial_opt(model, tokenizer, input_conv, target, attack_config, logger)
+    logger.log(loss_sequences_attack)
+    logger.log(best_output_sequences_attack)
+    final_inputs_strings_attack = tokenizer.batch_decode(best_output_sequences_attack, clean_up_tokenization_spaces=False)
+    logger.log(final_inputs_strings_attack)
 
-    del loss_sequences_baseline, best_output_sequences_baseline, final_inputs_strings_baseline
+    del loss_sequences_attack, best_output_sequences_attack, final_inputs_strings_attack
     torch.cuda.synchronize()
     gc.collect()
     torch.cuda.empty_cache()
 
     gcg_baseline_params = {
-        "signal_function": gcg.rand_gcg_signal,
+        "signal_function": gcg.og_gcg_signal,
         "max_steps": 500,
         "topk": 256,
         "forward_eval_candidates": 512,
@@ -212,7 +220,7 @@ if __name__ == "__main__":
             for x in input_prompts
         ]
     indices_to_sample = [83, 167, 170, 50, 133, 82, 159, 105, 152, 203, 96, 125, 191, 15, 187, 162, 6, 88, 101, 185, 156, 109, 171, 195, 123, 190, 205, 158, 163, 178, 63, 134, 39, 197, 37, 95, 177, 93, 10, 147, 55, 115, 11, 128, 25, 189, 113, 106, 51, 146]
-    indices_to_exclude = []
+    indices_to_exclude = [50, 152, 125, 162, 88, 171, 123, 39, 55, 51]
     indices_to_sample = [x for x in indices_to_sample if not x in indices_to_exclude]
     print(indices_to_sample)
 
