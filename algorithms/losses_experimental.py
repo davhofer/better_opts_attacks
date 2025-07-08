@@ -528,7 +528,7 @@ def get_dolly_data(tokenizer, input_tokenized_data, logger):
             },
             {
                 "role": "user",
-                "content": x["context"] + " " + attack_utility.ADV_PREFIX_INDICATOR + common_payload_string + attack_utility.ADV_SUFFIX_INDICATOR
+                "content": x["context"] + " " + attack_utility.ADV_PREFIX_INDICATOR + " " +  common_payload_string + " " +  attack_utility.ADV_SUFFIX_INDICATOR
             }
         ]
         for x in dolly_data

@@ -39,6 +39,8 @@ def analyze_conversation_tokens(conversation, tokenizer):
         tokenize=False,
         add_generation_prompt=True
     )
+    if tokenizer.chat_template.endswith("\n") and not formatted_text.endswith("\n"):
+        formatted_text = formatted_text + "\n"
     
     # Track the original content positions
     content_char_ranges = []
@@ -363,15 +365,25 @@ def conversation_masks(
         processed_conversation,  # Exclude the target string message
         tokenize=False,
         add_generation_prompt=True,    # Let the tokenizer handle the generation prompt
-    ) + target_string  # Add target string separately to maintain control over its position
+    ) 
+    if tokenizer.chat_template.endswith("\n") and not full_text.endswith("\n"):
+        full_text = full_text + "\n"
+
+    full_text = full_text + target_string  # Add target string separately to maintain control over its position
     
     # Tokenize the conversation without the target string first
+    
+    conversation_tokens_input = tokenizer.apply_chat_template(
+        processed_conversation,
+        tokenize=False,
+        add_generation_prompt=True
+    )
+    if tokenizer.chat_template.endswith("\n") and not conversation_tokens_input.endswith("\n"):
+        conversation_tokens_input = conversation_tokens_input + "\n"
+
+    
     conversation_tokens = tokenizer(
-        tokenizer.apply_chat_template(
-            processed_conversation,
-            tokenize=False,
-            add_generation_prompt=True
-        ),
+        conversation_tokens_input,
         return_offsets_mapping=True,
         add_special_tokens=False
     )
@@ -725,7 +737,7 @@ def generate_valid_input_tokenized_data(
 
         except Exception as e:
             INIT_TOKENIZATION_FAILED = f"The given initialization failed due to the following reasons - {str(e)}"
-            # logger.log(INIT_TOKENIZATION_FAILED)
+            logger.log(INIT_TOKENIZATION_FAILED)
             if new_init_config["strategy_type"] != "random":
                 raise ValueError(f"{INIT_TOKENIZATION_FAILED}")
             new_seed = int(time.time())
@@ -743,6 +755,8 @@ def _get_layer_obj(model):
     if isinstance(model, peft.PeftModel):
         return model.base_model.model.model.layers
     elif isinstance(model, transformers.LlamaPreTrainedModel):
+        return model.model.layers
+    elif isinstance(model, transformers.MistralPreTrainedModel):
         return model.model.layers
 
 
