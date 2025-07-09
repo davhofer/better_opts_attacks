@@ -1,0 +1,12 @@
+torch
+transformers
+datasets
+dill
+trl
+accelerate
+peft
+pandas
+python-dotenv
+huggingface_hub[cli]
+hf_transfer
+bitsandbytes
