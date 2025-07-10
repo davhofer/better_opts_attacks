@@ -94,4 +94,4 @@ While the above suffices to generate most of the actual attacks in the paper, th
 
 ## Contact
 
-For any queries, bug reports, details or clarifications, please feel free to raise an issue or mail the authors.
+For any queries, bug reports, details or clarifications, please feel free to raise an issue on Github or mail the authors.
