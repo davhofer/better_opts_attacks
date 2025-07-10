@@ -10,3 +10,5 @@ python-dotenv
 huggingface_hub[cli]
 hf_transfer
 bitsandbytes
+fastchat
+sentencepiece

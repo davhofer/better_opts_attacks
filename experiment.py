@@ -212,12 +212,12 @@ if __name__ == "__main__":
         default="secalign"
     )
     parser.add_argument(
-        "--prefix_length",
+        "--prefix-length",
         type=int,
         default=5
     )
     parser.add_argument(
-        "--suffix_length",
+        "--suffix-length",
         type=int,
         default=20
     )
