@@ -27,6 +27,6 @@ huggingface-cli login --token ${HF_PASSWORD}
 huggingface-cli download meta-llama/Meta-Llama-3-8B-Instruct --local-dir secalign_refactored/secalign_models/meta-llama/Meta-Llama-3-8B-Instruct
 huggingface-cli download mistralai/Mistral-7B-Instruct-v0.1 --local-dir secalign_refactored/secalign_models/mistralai/Mistral-7B-Instruct-v0.1
 
-python3 setup_scripts/runpod_setup.py
+python3 setup_scripts/download_models.py
 
 echo "Setup complete!"
