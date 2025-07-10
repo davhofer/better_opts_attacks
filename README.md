@@ -92,6 +92,10 @@ The analysis scripts have been kept separate fundamentally to ensure that the op
 
 While the above suffices to generate most of the actual attacks in the paper, the code contains several features that allow users to make several changes to the various parameters in the code itself. Such as tweaking or creating new loss functions, tweaking existing algorithms and so on.
 
+## Generated attacks
+
+We also share some of our generated attacks in the zipped file located in `data/attacks_generated.zip`.
+
 ## Contact
 
 For any queries, bug reports, details or clarifications, please feel free to raise an issue on Github or mail the authors.
