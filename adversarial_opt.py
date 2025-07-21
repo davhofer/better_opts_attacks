@@ -9,10 +9,9 @@ import pandas as pd
 import gc
 
 import algorithms.gcg as gcg
-import algorithms.autodan as autodan
-import algorithms.embed_snap as embed_snap
 import utils.attack_utility as attack_utility
 import utils.experiment_logger as experiment_logger
+import algorithms.universal_astra as universal_astra
 
 @experiment_logger.log_parameters(exclude=["model", "tokenizer"])
 def adversarial_opt(
@@ -57,13 +56,8 @@ def adversarial_opt(
             raise ValueError(f"At least give something to build off off")
 
     attack_algorithm = adversarial_parameters_dict["attack_algorithm"]
-    if attack_algorithm == "gcg":
-        loss_sequences, best_output_sequences = gcg.gcg(model, tokenizer, input_tokenized_data, adversarial_parameters_dict["attack_hyperparameters"], logger)
-        logger.log(loss_sequences)
-        logger.log(best_output_sequences)
-        return loss_sequences, best_output_sequences, None
     
-    elif attack_algorithm == "custom_gcg":
+    if attack_algorithm == "custom_gcg":
         early_stop = adversarial_parameters_dict.get("early_stop", True)
         eval_every_step = adversarial_parameters_dict.get("eval_every_step", False)
         identical_outputs_before_stop = adversarial_parameters_dict.get("identical_outputs_before_stop", 5)
@@ -87,49 +81,7 @@ def adversarial_opt(
         )
         logger.log(logprobs_sequences)
         logger.log(best_output_sequences)
-        return logprobs_sequences, best_output_sequences
-    
-    elif attack_algorithm == "autodan":
-        early_stop = adversarial_parameters_dict.get("early_stop", True)
-        eval_every_step = adversarial_parameters_dict.get("eval_every_step", True)
-        identical_outputs_before_stop = adversarial_parameters_dict.get("identical_outputs_before_stop", 5)
-        generation_config = adversarial_parameters_dict.get("generation_config", attack_utility.DEFAULT_TEXT_GENERATION_CONFIG)
-
-        logprobs_sequences, best_output_sequences = autodan.autodan(model,
-            tokenizer,
-            input_tokenized_data,
-            adversarial_parameters_dict["attack_hyperparameters"],
-            logger,
-            early_stop=early_stop,
-            eval_every_step=eval_every_step,
-            identical_outputs_before_stop=identical_outputs_before_stop,
-            generation_config=generation_config
-        )
-        logger.log(logprobs_sequences)
-        logger.log(best_output_sequences)
-        return logprobs_sequences, best_output_sequences
-    
-    elif attack_algorithm == "embed_opt":
-        early_stop = adversarial_parameters_dict.get("early_stop", False)
-        eval_every_step = adversarial_parameters_dict.get("eval_every_step", True)
-        identical_outputs_before_stop = adversarial_parameters_dict.get("identical_outputs_before_stop", 5)
-        generation_config = adversarial_parameters_dict.get("generation_config", attack_utility.DEFAULT_TEXT_GENERATION_CONFIG)
-        eval_initial = adversarial_parameters_dict.get("eval_initial", True)
-
-        logprobs_sequences, embeds_sequences = embed_snap.embed_opt(model,
-            tokenizer,
-            input_tokenized_data,
-            adversarial_parameters_dict["attack_hyperparameters"],
-            logger,
-            early_stop=early_stop,
-            eval_every_step=eval_every_step,
-            eval_initial=eval_initial,
-            generation_config=generation_config,
-            identical_outputs_before_stop=identical_outputs_before_stop
-        )
-        logger.log(logprobs_sequences)
-        logger.log(embeds_sequences)
-        return logprobs_sequences, embeds_sequences
+        return logprobs_sequences, best_output_sequences    
 
     elif attack_algorithm == "sequential":
 
@@ -192,13 +144,145 @@ def adversarial_opt(
         return all_logprobs_sequences, all_best_tokens_sequences
 
 
-# def universal_adversarial_opt(
-#     model: transformers.AutoModelForCausalLM,
-#     tokenizer: transformers.AutoTokenizer,
-#     input_template: str | typing.List[typing.Dict[str, str]],
-#     target_output_str: str,
-#     adversarial_parameters_dict: typing.Dict,
-#     logger: experiment_logger.ExperimentLogger,
-# )
+def altogether_adversarial_opt(
+    models: list[transformers.AutoModelForCausalLM],
+    tokenizer: transformers.AutoTokenizer,
+    input_tokenized_data_list: typing.List[typing.Dict],
+    target_output_str: str,
+    adversarial_parameters_dict: typing.Dict,
+    logger: experiment_logger.ExperimentLogger,    
+):
+    attack_algorithm = adversarial_parameters_dict.get("attack_algorithm", "universal_astra")
+    
+    if attack_algorithm == "universal_gcg":
+        
+        generation_config = adversarial_parameters_dict.get("generation_config", attack_utility.DEFAULT_TEXT_GENERATION_CONFIG)
+        eval_initial = adversarial_parameters_dict.get("eval_initial", True)
+        to_cache_logits = adversarial_parameters_dict.get("to_cache_logits", True)
+        to_cache_attentions = adversarial_parameters_dict.get("to_cache_attentions", True)
+
+        best_output_tokens_sequences_dict = gcg.weakly_universal_gcg(models,
+            tokenizer,
+            input_tokenized_data_list,
+            target_output_str,
+            adversarial_parameters_dict["attack_hyperparameters"],
+            logger,
+            generation_config=generation_config,
+            eval_initial=eval_initial,
+            to_cache_logits=to_cache_logits,
+            to_cache_attentions=to_cache_attentions
+        )
+
+        logger.log(best_output_tokens_sequences_dict)
+        return best_output_tokens_sequences_dict[-1]
+
+    if attack_algorithm == "universal_astra":
+        early_stop = adversarial_parameters_dict.get("early_stop", True)
+        eval_every_step = adversarial_parameters_dict.get("eval_every_step", False)
+        generation_config = adversarial_parameters_dict.get("generation_config", attack_utility.DEFAULT_TEXT_GENERATION_CONFIG)
+        eval_initial = adversarial_parameters_dict.get("eval_initial", True)
+        to_cache_logits = adversarial_parameters_dict.get("to_cache_logits", True)
+        to_cache_attentions = adversarial_parameters_dict.get("to_cache_attentions", True)
+
+        best_output_tokens_sequences_dict = universal_astra.weakly_universal_astra(models,
+            tokenizer,
+            input_tokenized_data_list,
+            target_output_str,
+            adversarial_parameters_dict["attack_hyperparameters"],
+            logger,
+            early_stop=early_stop,
+            eval_every_step=eval_every_step,
+            generation_config=generation_config,
+            eval_initial=eval_initial,
+            to_cache_logits=to_cache_logits,
+            to_cache_attentions=to_cache_attentions
+        )
+        logger.log(best_output_tokens_sequences_dict)
+
+        return best_output_tokens_sequences_dict[-1]
 
 
+
+def weak_universal_adversarial_opt(
+    models: list[transformers.AutoModelForCausalLM],
+    tokenizer: transformers.AutoTokenizer,
+    input_templates: typing.List[str | typing.List[typing.Dict[str, str]]],
+    target_output_str: str,
+    adversarial_parameters_dict: typing.Dict,
+    logger: experiment_logger.ExperimentLogger,
+):
+        
+    if "input_tokenized_data_list" in adversarial_parameters_dict:
+        input_tokenized_data_list = adversarial_parameters_dict["input_tokenized_data_list"]
+    else:
+        if "init_config" in adversarial_parameters_dict and input_templates is not None:
+            assert isinstance(input_templates, list)
+            all_checks_pass = True
+            for input_template in input_templates:
+                if isinstance(input_template, str):
+                    continue
+                if isinstance(input_template, list):
+                    try:
+                        assert all([isinstance(x, dict) for x in input_template])
+                    except AssertionError:
+                        all_checks_pass = False
+                else:
+                    all_checks_pass = False
+            if not all_checks_pass:
+                raise ValueError(f"Malformed input_templates sent.")
+
+            init_config = adversarial_parameters_dict["init_config"]
+            num_init_tries = 0
+            while num_init_tries < 1000:
+                adv_prefix_init, adv_suffix_init = attack_utility.initialize_adversarial_strings(tokenizer, init_config)
+                input_tokenized_data_list = []
+                are_all_inits_successful = True   
+                for input_template in input_templates:
+                    try:
+                        if isinstance(input_template, str):
+                            input_tokenized_data = attack_utility.string_masks(tokenizer, input_template, adv_prefix_init, adv_suffix_init, target_output_str)
+                        elif isinstance(input_template, list):
+                            input_tokenized_data = attack_utility.conversation_masks(tokenizer, input_template, adv_prefix_init, adv_suffix_init, target_output_str)
+                        input_tokenized_data_list.append(input_tokenized_data)
+                    except Exception as e:
+                        are_all_inits_successful = False
+                        break
+
+                if num_init_tries >= 999:
+                    SEVERAL_INITS_FAILED = "ALL INITS FAILED. RAISING EXCEPTION."
+                    logger.log(SEVERAL_INITS_FAILED)
+                    continue
+                if not are_all_inits_successful:
+                    init_config["seed"] = int(time.time())
+                    num_init_tries += 1
+                    continue
+                
+                input_tokenized_data_list = attack_utility.normalize_input_tokenized_data_list(input_tokenized_data_list)
+
+        else:
+            raise ValueError(f"At least give something to build off off")
+
+    attack_type = adversarial_parameters_dict.get("attack_type", "incremental")
+
+    if attack_type == "incremental":
+        increasing_batch_size = adversarial_parameters_dict.get("attack_batch_size", 2)
+        increasing_index_sizes = [increasing_batch_size * j for j in range(len(input_tokenized_data_list) // increasing_batch_size)]
+        for increasing_index_size in increasing_index_sizes:
+            if increasing_index_size == 0:
+                continue
+            increasing_input_tokenized_data_list = input_tokenized_data_list[:increasing_index_size]
+            smaller_adversarial_parameters_dict = {
+                "input_tokenized_data_list": increasing_input_tokenized_data_list,
+                "attack_type": "altogether",
+                "attack_algorithm": adversarial_parameters_dict["attack_algorithm"],
+                "attack_hyperparameters": adversarial_parameters_dict["attack_hyperparameters"]
+            }
+            best_output_tokens_dict = weak_universal_adversarial_opt(models, tokenizer, None, target_output_str, smaller_adversarial_parameters_dict, logger)
+            input_tokenized_data_list = attack_utility.update_all_tokens(best_output_tokens_dict, input_tokenized_data_list)
+        return best_output_tokens_dict
+    
+    elif attack_type == "altogether":
+        best_output_tokens_dict = altogether_adversarial_opt(models, tokenizer, input_tokenized_data_list, target_output_str, adversarial_parameters_dict, logger)
+        return best_output_tokens_dict
+    else:
+        raise ValueError(f"Only \"incremental\" and \"altogether\" are supported as of now.")

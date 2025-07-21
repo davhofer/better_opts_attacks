@@ -6,6 +6,9 @@ import gc
 import time
 import copy
 import peft
+import threading
+import queue
+from concurrent.futures import ThreadPoolExecutor
 
 import utils.experiment_logger as experiment_logger
 
@@ -751,6 +754,56 @@ def generate_valid_input_tokenized_data(
     logger.log(new_init_config, num_init_tries=num_init_tries)
     return input_tokenized_data, new_init_config
 
+def generate_bulk_valid_input_tokenized_data(
+    tokenizer,
+    input_templates,
+    target_output_str,
+    init_config,
+    logger: experiment_logger.ExperimentLogger,
+    *,
+    max_attempts = 10000
+):
+    new_init_config = copy.deepcopy(init_config)
+    num_init_tries = 0
+    # if new_init_config["prefix_length"] > 0:
+    #     new_init_config["prefix_length"] = new_init_config["prefix_length"] - 1
+    # if new_init_config["suffix_length"] > 0:
+    #     new_init_config["suffix_length"] = new_init_config["suffix_length"] - 1
+
+    input_tokenized_data_list = []
+    while num_init_tries < max_attempts:
+        try:
+            adv_prefix_init, adv_suffix_init = initialize_adversarial_strings(tokenizer, new_init_config)
+            for input_template in input_templates:
+                if isinstance(input_template, str):
+                    input_tokenized_data = string_masks(tokenizer, input_template, adv_prefix_init, adv_suffix_init, target_output_str)
+                elif isinstance(input_template, list):
+                    input_tokenized_data = conversation_masks(tokenizer, input_template, adv_prefix_init, adv_suffix_init, target_output_str)
+                
+                masks_data = input_tokenized_data["masks"]
+                if len(masks_data["prefix_mask"]) > new_init_config.get("prefix_length", 10000):
+                    raise ValueError(f"Prefix is too long.")
+                if len(masks_data["suffix_mask"]) > new_init_config.get("suffix_length", 10000):
+                    raise ValueError(f"Suffix is too long.")
+                input_tokenized_data_list.append(input_tokenized_data)
+        except Exception as e:
+            INIT_TOKENIZATION_FAILED = f"The given initialization failed due to the following reasons - {str(e)}"
+            logger.log(INIT_TOKENIZATION_FAILED)
+            if new_init_config["strategy_type"] != "random":
+                raise ValueError(f"{INIT_TOKENIZATION_FAILED}")
+            new_seed = int(time.time())
+            RETRYING_STRING = f"Retrying with another random seed: {str(new_seed)}"
+            new_init_config["seed"] = new_seed
+            input_tokenized_data_list = []
+            # logger.log(RETRYING_STRING)
+        else:
+            break
+        num_init_tries += 1
+
+    logger.log(new_init_config, num_init_tries=num_init_tries)
+    return input_tokenized_data_list, new_init_config
+
+
 def _get_layer_obj(model):
     if isinstance(model, peft.PeftModel):
         return model.base_model.model.model.layers
@@ -854,7 +907,6 @@ class CachedTargetLogprobs:
         losses_tensor = torch.cat(losses_list)
         return losses_tensor
 
-
 class CachedBulkForward:
     def _cache_init(self, model, tokenizer, input_tokenized_data):
         tokens = input_tokenized_data["tokens"]
@@ -941,3 +993,356 @@ class CachedBulkForward:
                 torch.cuda.synchronize()
                 gc.collect()
                 torch.cuda.empty_cache()
+
+class CachedAverageLogprobs:
+
+    def _cache_init(self, models, tokenizer, input_tokenized_data_list):
+
+        num_elements_per_batch = len(input_tokenized_data_list) // len(models)
+        input_tokenized_data_list_batches = [input_tokenized_data_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
+                
+        for model, input_tokenized_data_list_batch in zip(models, input_tokenized_data_list_batches):
+            cache_object_batch = []
+            static_index_batch = []
+            for input_tokenized_data in input_tokenized_data_list_batch:
+                tokens = input_tokenized_data["tokens"]
+                masks_data = input_tokenized_data["masks"]
+                optim_mask = masks_data["optim_mask"]
+                static_index = min(optim_mask) - 1
+                static_tokens = tokens[:static_index]
+                past_key_values = model(input_ids=torch.unsqueeze(static_tokens, dim=0).to(model.device), use_cache=True).past_key_values
+                cache_object_batch.append(past_key_values)
+                static_index_batch.append(static_index)
+            self.cache_object.append(cache_object_batch)
+            self.static_indices.append(static_index_batch)
+
+    def _find_single_element_batch_size(self, model, input_tokenized_data, past_key_values, static_index):
+        with torch.no_grad():
+            tokens = input_tokenized_data["tokens"]
+            batch_size = DEFAULT_MAXIMUM_BATCH_SIZE
+            while batch_size > 1:
+                input_ids_sliced_batch = torch.unsqueeze(tokens, dim=0).expand(batch_size, -1)[:, static_index:]
+                batched_kv_cache = []
+                for keys_cached, values_cached in past_key_values:
+                    keys_cached_new = keys_cached.expand(batch_size, -1, -1, -1)
+                    values_cached_new = values_cached.expand(batch_size, -1, -1, -1)
+                    batched_kv_cache.append((keys_cached_new, values_cached_new))
+                try:
+                    dynamic_cache = transformers.DynamicCache.from_legacy_cache(batched_kv_cache)
+                    output = model(
+                        input_ids = input_ids_sliced_batch.to(model.device),
+                        past_key_values = dynamic_cache
+                    ).logits
+                    for pair in batched_kv_cache:
+                        del pair
+                    del batched_kv_cache
+                    del output, dynamic_cache
+                    torch.cuda.synchronize()
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    break
+                except torch.cuda.OutOfMemoryError:
+                    del dynamic_cache, batched_kv_cache
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    batch_size //= 2
+        
+        return batch_size // 2
+
+    def _batch_size_init(self, models, input_tokenized_data_list):
+
+        num_elements_per_batch = len(input_tokenized_data_list) // len(models)
+        input_tokenized_data_list_batches = [input_tokenized_data_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
+
+        for model, input_tokenized_data_list_batch, cache_object_batch, static_index_batch in zip(models, input_tokenized_data_list_batches, self.cache_object, self.static_indices):
+            per_device_batch_sizes = []
+            for input_tokenized_data, cache_object, static_index in zip(input_tokenized_data_list_batch, cache_object_batch, static_index_batch):
+                single_example_batch_size = self._find_single_element_batch_size(model, input_tokenized_data, cache_object, static_index)
+                per_device_batch_sizes.append(single_example_batch_size)
+            self.batch_sizes.append(per_device_batch_sizes)
+
+    def _single_thread_call(self,
+        model,
+        tokenizer,
+        batch_id,
+        input_points_list_batch,
+        masks_data_list_batch,
+        logger,
+        **kwargs
+    ):
+        cache_object_batch = self.cache_object[batch_id]
+        static_index_batch = self.static_indices[batch_id]
+        batch_size_batch = self.batch_sizes[batch_id]
+
+        losses_list_batch = []
+        for input_points, masks_data, past_key_values, static_index, batch_size in zip(input_points_list_batch, masks_data_list_batch, cache_object_batch, static_index_batch, batch_size_batch):
+            if input_points.dim() == 1:
+                input_points = torch.unsqueeze(input_points, dim=0)
+
+            input_points_sliced = input_points[:, static_index:]
+            target_mask = masks_data["target_mask"]
+            target_tokens = input_points[0, target_mask]
+            data_split = torch.split(input_points_sliced, batch_size, dim=0)
+            losses_list = []
+            with torch.no_grad():
+                for data_batch in data_split:
+                        new_legacy_cache = []
+                        for key_cache, value_cache in past_key_values:
+                            new_legacy_cache.append((key_cache.expand(data_batch.shape[0], -1, -1, -1).clone(), value_cache.expand(data_batch.shape[0], -1, -1, -1).clone()))
+
+                        dynamic_cache = transformers.DynamicCache.from_legacy_cache(new_legacy_cache)
+                        output = model(input_ids=data_batch.to(model.device), past_key_values=dynamic_cache)
+                        logit_piece = output.logits
+                        loss_tensor = UNREDUCED_CE_LOSS(torch.transpose(logit_piece[:, -(len(target_mask) + 1):- 1, :], 1, 2), target_tokens.repeat((logit_piece.shape[0], 1)).to(logit_piece.device)).sum(dim=1)
+                        losses_list.append(loss_tensor.detach())
+                        for pair in new_legacy_cache:
+                            del pair
+                        del new_legacy_cache, dynamic_cache, output
+                        torch.cuda.synchronize()
+                        gc.collect()
+                        torch.cuda.empty_cache()
+            losses_tensor = torch.cat(losses_list)
+        losses_list_batch.append(losses_tensor)
+        return losses_list_batch
+
+
+    def __init__(self):
+        self.is_inited = False
+        self.cache_object = []
+        self.batch_sizes = []
+        self.static_indices = []
+
+    def __call__(self, models, tokenizer, input_points_list, masks_data_list, logger, *, canonical_device_idx=0, **kwargs):
+
+        if not self.is_inited:
+            input_tokenized_data_list = [
+                {
+                    "tokens": input_points[0],
+                    "masks": masks_data
+                }
+                for (input_points, masks_data) in zip(input_points_list, masks_data_list)
+            ]
+            self._cache_init(models, tokenizer, input_tokenized_data_list)
+            self._batch_size_init(models, input_tokenized_data_list)
+            self.is_inited = True
+
+        num_elements_per_batch = len(input_points_list) // len(models)
+        input_points_list_batches = [input_points_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
+        masks_data_list_batches = [masks_data_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
+
+        results = []
+
+        with ThreadPoolExecutor(max_workers=len(models)) as executor:
+            future_to_models = [
+                executor.submit(self._single_thread_call, model, tokenizer, batch_id, input_points_list_batch, masks_data_list_batch, logger, **kwargs)
+                for batch_id, (model, input_points_list_batch, masks_data_list_batch) in enumerate(zip(models, input_points_list_batches, masks_data_list_batches))
+            ]
+
+            for idx, future in enumerate(future_to_models):
+                try:
+                    result = future.result()  # 5 minute timeout
+                    results.append((idx, result))
+                except Exception as exc:
+                    MODEL_EXCEPTION_STRING = f"Model {idx} generated an exception: {exc}"
+                    logger.log(MODEL_EXCEPTION_STRING)
+                    results.append((idx, None))  # or handle differently
+                    raise RuntimeError(MODEL_EXCEPTION_STRING)
+
+        results.sort(key = lambda x: x[0])
+        
+        stacked_results = []
+        for _, model_result in results:
+            stacked_results.append(torch.stack(model_result).to(f"cuda:{str(canonical_device_idx)}"))
+        final_stacked_results = torch.cat(stacked_results)
+        return final_stacked_results.mean(dim=0)
+        
+        # put averaging thing here
+
+class CachedAverageBulkForward:
+
+    def _cache_init(self, models, tokenizer, input_tokenized_data_list):
+
+        num_elements_per_batch = len(input_tokenized_data_list) // len(models)
+        input_tokenized_data_list_batches = [input_tokenized_data_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
+                
+        for model, input_tokenized_data_list_batch in zip(models, input_tokenized_data_list_batches):
+            cache_object_batch = []
+            static_index_batch = []
+            for input_tokenized_data in input_tokenized_data_list_batch:
+                tokens = input_tokenized_data["tokens"]
+                masks_data = input_tokenized_data["masks"]
+                optim_mask = masks_data["optim_mask"]
+                static_index = min(optim_mask) - 1
+                static_tokens = tokens[:static_index]
+                past_key_values = model(input_ids=torch.unsqueeze(static_tokens, dim=0).to(model.device), use_cache=True).past_key_values
+                cache_object_batch.append(past_key_values)
+                static_index_batch.append(static_index)
+            self.cache_object.append(cache_object_batch)
+            self.static_indices.append(static_index_batch)
+
+    def _find_single_element_batch_size(self, model, input_tokenized_data, past_key_values, static_index):
+        with torch.no_grad():
+            tokens = input_tokenized_data["tokens"]
+
+            while batch_size > 1:
+                input_ids_sliced_batch = torch.unsqueeze(tokens, dim=0).expand(batch_size, -1)[:, static_index:]
+                batched_kv_cache = []
+                for keys_cached, values_cached in past_key_values:
+                    keys_cached_new = keys_cached.expand(batch_size, -1, -1, -1)
+                    values_cached_new = values_cached.expand(batch_size, -1, -1, -1)
+                    batched_kv_cache.append((keys_cached_new, values_cached_new))
+                try:
+                    dynamic_cache = transformers.DynamicCache.from_legacy_cache(batched_kv_cache)
+                    output = model(
+                        input_ids = input_ids_sliced_batch.to(model.device),
+                        past_key_values = dynamic_cache
+                    ).logits
+                    for pair in batched_kv_cache:
+                        del pair
+                    del batched_kv_cache
+                    del output, dynamic_cache
+                    torch.cuda.synchronize()
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    break
+                except torch.cuda.OutOfMemoryError:
+                    del dynamic_cache, batched_kv_cache
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    batch_size //= 2
+        
+        return batch_size // 2
+
+    def _batch_size_init(self, models, input_tokenized_data_list):
+
+        num_elements_per_batch = len(input_tokenized_data_list) // len(models)
+        input_tokenized_data_list_batches = [input_tokenized_data_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
+
+        for model, input_tokenized_data_list_batch, cache_object_batch, static_index_batch in zip(models, input_tokenized_data_list_batches, self.cache_object, self.static_indices):
+            per_device_batch_sizes = []
+            for input_tokenized_data, cache_object, static_index in zip(input_tokenized_data_list_batch, cache_object_batch, static_index_batch):
+                single_example_batch_size = self._find_single_element_batch_size(model, input_tokenized_data, cache_object, static_index)
+                per_device_batch_sizes.append(single_example_batch_size)
+            self.batch_sizes.append(per_device_batch_sizes)
+
+    def _single_thread_call(self,
+        model,
+        tokenizer,
+        batch_id,
+        input_points_list_batch,
+        masks_data_list_batch,
+        target_tokens,
+        logger,
+        **kwargs
+    ):
+        cache_object_batch = self.cache_object[batch_id]
+        static_index_batch = self.static_indices[batch_id]
+        batch_size_batch = self.batch_sizes[batch_id]
+
+        losses_list_batch = []
+        for input_points, masks_data, past_key_values, static_index, batch_size in zip(input_points_list_batch, masks_data_list_batch, cache_object_batch, static_index_batch, batch_size_batch):
+            input_points_sliced = input_points[:, static_index:]
+            target_mask = masks_data["target_mask"]
+            data_split = torch.split(input_points_sliced, batch_size, dim=0)
+            losses_list = []
+            with torch.no_grad():
+                for data_batch in data_split:
+                        new_legacy_cache = []
+                        for key_cache, value_cache in past_key_values:
+                            new_legacy_cache.append((key_cache.expand(data_batch.shape[0], -1, -1, -1).clone(), value_cache.expand(data_batch.shape[0], -1, -1, -1).clone()))
+
+                        dynamic_cache = transformers.DynamicCache.from_legacy_cache(new_legacy_cache)
+                        output = model(input_ids=data_batch.to(model.device), past_key_values=dynamic_cache)
+                        logit_piece = output.logits
+                        loss_tensor = UNREDUCED_CE_LOSS(torch.transpose(logit_piece[:, -(len(target_mask) + 1):- 1, :], 1, 2), target_tokens.repeat((logit_piece.shape[0], 1)).to(logit_piece.device)).sum(dim=1)
+                        losses_list.append(loss_tensor.detach())
+                        for pair in new_legacy_cache:
+                            del pair
+                        del new_legacy_cache, dynamic_cache, output
+                        torch.cuda.synchronize()
+                        gc.collect()
+                        torch.cuda.empty_cache()
+            losses_tensor = torch.cat(losses_list)
+        losses_list_batch.append(losses_tensor)
+        return losses_list_batch
+
+    def __init__(self):
+        self.is_inited = False
+        self.cache_object = []
+        self.batch_sizes = []
+        self.static_indices = []
+
+    def __call__(self, models, tokenizer, input_points_list, masks_data_list, target_tokens, logger, **kwargs):
+
+        if not self.is_inited:
+            input_tokenized_data_list = [
+                {
+                    "tokens": input_points[0],
+                    "masks": masks_data
+                }
+                for (input_points, masks_data) in zip(input_points_list, masks_data_list)
+            ]
+            self._cache_init(models, tokenizer, input_tokenized_data_list)
+            self._batch_size_init(models, input_tokenized_data_list)
+            self.is_inited = True
+
+        results = []
+
+        with ThreadPoolExecutor(max_workers=len(models)) as executor:
+            future_to_models = [
+                executor.submit(self._single_thread_call, model, tokenizer, batch_id, input_points_list_batch, masks_data_list_batch, target_tokens, logger, **kwargs)
+                for batch_id, (model, input_points_list_batch, masks_data_list_batch) in enumerate(zip(models, input_points_list, masks_data_list))
+            ]
+
+            for idx, future in enumerate(future_to_models):
+                try:
+                    result = future.result(timeout=300)  # 5 minute timeout
+                    results.append((idx, result))
+                except Exception as exc:
+                    logger.error(f'Model {idx} generated an exception: {exc}')
+                    results.append((idx, None))  # or handle differently
+                    raise RuntimeError(f'Model {idx} generated an exception: {exc}')
+
+        results.sort(key = lambda x: x[0])
+        
+        # put averaging thing here
+
+
+def normalize_mask(input_tokenized_data_list, mask_key):
+    # Assumes masks are contiguous
+    token_to_index_map_list = [
+        {
+            x: idx for x, idx in zip(input_tokenized_data["tokens"][input_tokenized_data["masks"][mask_key]], input_tokenized_data["masks"][mask_key])
+        }
+        for input_tokenized_data in input_tokenized_data_list
+    ]
+
+    common_masked_tokens = set.intersection(*[set(input_tokenized_data["tokens"][input_tokenized_data["masks"][mask_key]].tolist()) for input_tokenized_data in input_tokenized_data_list])
+    mask_normalized_input_tokenized_data_list = [
+        {
+            "tokens": input_tokenized_data["tokens"],
+            "masks": (m := copy.deepcopy(input_tokenized_data["masks"])) or m.update({mask_key: torch.tensor(sorted(list({x: token_to_index_map_list[list_idx][x] for x in common_masked_tokens}.values())))}) or m
+        }
+        for list_idx, input_tokenized_data in enumerate(input_tokenized_data_list)
+    ]
+    return mask_normalized_input_tokenized_data_list
+
+def normalize_input_tokenized_data_list(input_tokenized_data_list, *, keys_to_normalize = ["prefix_mask", "suffix_mask", "payload_mask"]):
+    for mask_key in keys_to_normalize:
+        input_tokenized_data_list = normalize_mask(input_tokenized_data_list, mask_key)
+    return input_tokenized_data_list
+
+def update_all_tokens(best_output_tokens_dict, input_tokenized_data_list):
+    new_input_tokenized_data_list = []
+    for input_tokenized_data in input_tokenized_data_list:
+        new_input_tokenized_data = copy.deepcopy(input_tokenized_data)
+        new_input_tokenized_data["tokens"][new_input_tokenized_data["masks"]["prefix_mask"]] = best_output_tokens_dict["prefix_tokens"]
+        new_input_tokenized_data["tokens"][new_input_tokenized_data["masks"]["suffix_mask"]] = best_output_tokens_dict["suffix_tokens"]
+        new_input_tokenized_data_list.append(new_input_tokenized_data)
+    return new_input_tokenized_data_list
+
+def form_best_tokens_dict(input_tokenized_data_list):
+    return {
+        "prefix_tokens": input_tokenized_data_list[0]["tokens"][input_tokenized_data_list[0]["masks"]["prefix_mask"]],
+        "suffix_tokens": input_tokenized_data_list[0]["tokens"][input_tokenized_data_list[0]["masks"]["suffix_mask"]]
+    }

@@ -9,100 +9,20 @@ import gc
 
 
 GCG_LOSS_FUNCTION = attack_utility.UNREDUCED_CE_LOSS
-@experiment_logger.log_parameters(exclude=["model", "tokenizer"])
-def gcg(
-    model: transformers.AutoModelForCausalLM,
-    tokenizer: transformers.AutoTokenizer,
-    input_tokenized_data: typing.Dict[str, torch.tensor],
-    gcg_hyperparams: typing.Dict,
-    logger: experiment_logger.ExperimentLogger,
-    *,
-    loss_function = GCG_LOSS_FUNCTION,
-    eval_every_step = True,
-    generation_config = attack_utility.DEFAULT_TEXT_GENERATION_CONFIG
-):
-
-    input_tokens: torch.tensor = input_tokenized_data["tokens"]
-    optim_mask: torch.tensor = input_tokenized_data["masks"]["optim_mask"]
-    target_mask: torch.tensor = input_tokenized_data["masks"]["target_mask"]
-    eval_input_mask: torch.tensor = input_tokenized_data["masks"]["input_mask"]
-
-    gradient_signal = gcg_hyperparams["gradient_signal"]
-
-    loss_sequences = []
-    current_best_tokens = input_tokens.clone()
-    best_output_sequences = [current_best_tokens]
-    for step_num in range(gcg_hyperparams["max_steps"]):
-        one_hot_tensor = torch.nn.functional.one_hot(current_best_tokens.clone().detach(), num_classes=len(tokenizer.vocab)).to(dtype=model.dtype)
-        one_hot_tensor.requires_grad_()
-        embedding_tensor = model.get_input_embeddings().weight[:len(tokenizer.vocab)]
-        inputs_embeds = torch.unsqueeze(one_hot_tensor.to(embedding_tensor.device) @ embedding_tensor, 0)
-        logits = model(inputs_embeds=inputs_embeds).logits
-        loss_tensor = loss_function(logits[0, target_mask - 1, :], input_tokens[target_mask].to(logits.device)).sum()
-        loss_tensor.backward()
-        loss_val = loss_tensor.item()
-        loss_sequences.append(loss_val)
-        logger.log(loss_val, step_num=step_num)
-
-        if gradient_signal == "neg_grad":
-            grad_optims = - (one_hot_tensor.grad[optim_mask, :])
-            best_tokens_indices = grad_optims.topk(gcg_hyperparams["topk"], dim=-1).indices
-        elif gradient_signal == "random":
-            best_tokens_indices = torch.stack([torch.randperm(len(tokenizer))[:gcg_hyperparams["topk"]] for _ in range(optim_mask.shape[0])])
-        elif gradient_signal == "pos_grad":
-            grad_optims = (one_hot_tensor.grad[optim_mask, :])
-            best_tokens_indices = grad_optims.topk(gcg_hyperparams["topk"], dim=-1).indices
-        else:
-            raise ValueError(f"gradient_signal not recognized")
-
-        indices_to_sample = set()
-
-        if isinstance(gcg_hyperparams["forward_eval_candidates"], str):
-            if gcg_hyperparams["forward_eval_candidates"] == "all":
-                num_forward_evals = len(optim_mask) * gcg_hyperparams["topk"] 
-        else:
-            assert isinstance(gcg_hyperparams["forward_eval_candidates"], int), "Only strings or ints"
-            num_forward_evals = gcg_hyperparams["forward_eval_candidates"]
-
-        while len(indices_to_sample) < num_forward_evals:
-            first_coordinate = torch.randint(0, best_tokens_indices.shape[0], (1,)).to(torch.int32).item()
-            second_coordinate = torch.randint(0, best_tokens_indices.shape[1], (1,)).to(torch.int32).item()
-            if (first_coordinate, second_coordinate) in indices_to_sample:
-                continue
-            indices_to_sample.add((first_coordinate, second_coordinate))
-
-        substitutions_list = []
-        for index_to_sample in list(indices_to_sample):
-            random_substitution_make = current_best_tokens.clone()
-            random_substitution_make[optim_mask[index_to_sample[0]]] = best_tokens_indices[index_to_sample]
-            substitutions_list.append(random_substitution_make)
-        
-        substitution_data = torch.stack(substitutions_list)
-        inference_logits = attack_utility.bulk_logits(model, substitution_data)
-        true_losses = loss_function(inference_logits[:, target_mask - 1, :].transpose(1, 2), input_tokens.repeat(inference_logits.shape[0], 1)[:, target_mask]).sum(dim=1)
-        current_best_tokens = substitution_data[torch.argmin(true_losses)].clone()
-        logger.log(current_best_tokens, step_num=step_num)
-        best_output_sequences.append(current_best_tokens.clone())
-        if eval_every_step:
-            generated_output_tokens = model.generate(torch.unsqueeze(current_best_tokens[eval_input_mask], dim=0).to(model.device), attention_mask=torch.unsqueeze(torch.ones(current_best_tokens[eval_input_mask].shape).to(model.device), dim=0), **generation_config)
-            generated_output_string = tokenizer.batch_decode(generated_output_tokens[:, eval_input_mask[-1] + 1 :])[0]
-            logger.log(generated_output_string, step_num=step_num)
-
-    return loss_sequences, best_output_sequences
 
 def og_gcg_signal(
     model: transformers.AutoModelForCausalLM,
     tokenizer: transformers.AutoTokenizer,
-    input_points: torch.tensor,
-    masks_data: typing.Dict[str, torch.tensor],
+    input_points: torch.Tensor,
+    masks_data: typing.Dict[str, torch.Tensor],
     gcg_topk: int,
     logger: experiment_logger.ExperimentLogger,
     *,
     step_num,
     **kwargs
 ):
-    optim_mask: torch.tensor = masks_data["optim_mask"]
-    target_mask: torch.tensor = masks_data["target_mask"]
+    optim_mask: torch.Tensor = masks_data["optim_mask"]
+    target_mask: torch.Tensor = masks_data["target_mask"]
 
     one_hot_tensor = torch.nn.functional.one_hot(input_points.clone().detach(), num_classes=len(tokenizer.vocab)).to(dtype=model.dtype)
     one_hot_tensor.requires_grad_()
@@ -150,8 +70,6 @@ def rand_gcg_signal(
 
     best_tokens_indices = torch.stack([torch.randperm(len(tokenizer))[:gcg_topk] for _ in range(optim_mask.shape[0])])
     return best_tokens_indices
-
-
 
 @experiment_logger.log_parameters(exclude=["model", "tokenizer"])
 def custom_gcg(
@@ -311,3 +229,173 @@ def custom_gcg(
 
     logger.log(successive_correct_outputs, num_steps=step_num)
     return logprobs_sequences, best_output_sequences
+
+def average_target_logprobs_signal(
+    models: list[transformers.AutoModelForCausalLM],
+    tokenizer: transformers.AutoTokenizer,
+    input_tokenized_data_list: typing.List[typing.Dict],
+    gcg_topk: int,
+    logger: experiment_logger.ExperimentLogger,
+    *,
+    step_num,
+    canonical_device_idx = 0,
+    normalize_grads_before_accumulation = True,
+    **kwargs
+):
+    
+    num_elements_per_batch = len(input_tokenized_data_list) // len(models)
+    input_tokenized_data_list_batches = [input_tokenized_data_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
+
+    grads_list = []
+    for model, input_tokenized_data_list_batch in zip(models, input_tokenized_data_list_batches):
+        grads_list_batch = []
+        for input_tokenized_data in input_tokenized_data_list_batch:
+            input_points = input_tokenized_data["tokens"]
+            masks_data = input_tokenized_data["masks"]
+
+            optim_mask: torch.Tensor = masks_data["optim_mask"]
+            target_mask: torch.Tensor = masks_data["target_mask"]
+            
+            one_hot_tensor = torch.nn.functional.one_hot(input_points.clone().detach(), num_classes=len(tokenizer.vocab)).to(dtype=model.dtype)
+            one_hot_tensor.requires_grad_()
+            embedding_tensor = model.get_input_embeddings().weight[:len(tokenizer.vocab)]
+            inputs_embeds = torch.unsqueeze(one_hot_tensor.to(embedding_tensor.device) @ embedding_tensor, 0)
+            logits = model(inputs_embeds=inputs_embeds).logits
+            loss_tensor = GCG_LOSS_FUNCTION(logits[0, target_mask - 1, :], input_points[target_mask].to(logits.device)).sum()
+            loss_tensor.backward()
+            if normalize_grads_before_accumulation:
+                normalized_grad = one_hot_tensor.grad[optim_mask, :] / one_hot_tensor.grad[optim_mask, :].norm(dim=-1, keepdim=True)
+                grads_list_batch.append(normalized_grad)
+            else:
+                grads_list_batch.append(one_hot_tensor.grad[optim_mask, :])    
+        grads_list.append(torch.stack(grads_list_batch))
+    
+    device_moved_grad_list = []
+    for grads_list_batch_tensor in grads_list:
+        device_moved_grad_list.append(grads_list_batch_tensor.to(canonical_device_idx))
+    
+    final_grads = - torch.cat(device_moved_grad_list, dim=0).mean(dim=0)
+    best_tokens_indices = final_grads.topk(gcg_topk, dim=-1).indices
+    return best_tokens_indices
+
+def DEFAULT_GCG_RANDOMNESS_STRATEGY(tokenizer, best_tokens_indices, input_tokenized_data_list, substitution_validity_function, max_candidate_size):
+    
+    indices_to_sample = set()
+    indices_to_exclude = set()
+
+    while len(indices_to_sample) < max_candidate_size:
+        first_coordinate = torch.randint(0, best_tokens_indices.shape[0], (1,)).to(torch.int32).item()
+        second_coordinate = torch.randint(0, best_tokens_indices.shape[1], (1,)).to(torch.int32).item()
+        if (first_coordinate, second_coordinate) in indices_to_sample:
+            continue
+        if (first_coordinate, second_coordinate) in indices_to_exclude:
+            continue
+
+        all_substitutions_valid = True
+        for input_tokenized_data in input_tokenized_data_list:
+            masks_data = input_tokenized_data["masks"]
+            optim_mask = masks_data["optim_mask"]
+            random_substitution_make = input_tokenized_data["tokens"].clone()  
+            random_substitution_make[optim_mask[first_coordinate]] = best_tokens_indices[(first_coordinate, second_coordinate)]
+
+            if (substitution_validity_function is None) or (substitution_validity_function(random_substitution_make, tokenizer=tokenizer, masks_data=masks_data)):
+                pass
+            else:
+                # SUBSTITUTION_INVALID_STRING = "substitution_invalid"
+                # logger.log(SUBSTITUTION_INVALID_STRING)
+                indices_to_exclude.add((first_coordinate, second_coordinate))
+                all_substitutions_valid = False
+                break
+        
+        if not all_substitutions_valid:
+            continue
+        else:
+            indices_to_sample.add((first_coordinate, second_coordinate))
+    
+    candidates_list = []
+    for input_tokenized_data in input_tokenized_data_list:
+        input_new_candidates = []
+        for index_to_sample in indices_to_sample:
+            masks_data = input_tokenized_data["masks"]
+            optim_mask = masks_data["optim_mask"]
+            random_substitution_make = input_tokenized_data["tokens"].clone()  
+            random_substitution_make[optim_mask[index_to_sample[0]]] = best_tokens_indices[(index_to_sample[0], index_to_sample[1])]
+            input_new_candidates.append(random_substitution_make)
+        candidates_list.append(torch.stack(input_new_candidates))
+    
+    return candidates_list
+
+@experiment_logger.log_parameters(exclude=["models", "tokenizer"])
+def weakly_universal_gcg(
+    models: list[transformers.AutoModelForCausalLM],
+    tokenizer: transformers.AutoTokenizer,
+    input_tokenized_data_list: typing.List[typing.Dict],
+    target_output_str: str,
+    universal_gcg_hyperparameters: typing.Dict,
+    logger: experiment_logger.ExperimentLogger,
+    *,
+    eval_initial,
+    generation_config,
+    to_cache_logits,
+    to_cache_attentions    
+):
+    logger.log(input_tokenized_data_list)
+
+    if to_cache_logits:
+        average_target_logprobs = attack_utility.CachedAverageLogprobs()
+    else:
+        raise ValueError(f"Just cache ffs. Or write your own implementation.")
+
+    if to_cache_attentions:
+        att_cacher = attack_utility.CachedAverageBulkForward()
+    else:
+        raise ValueError(f"Just cache ffs. Or write your own implementation.")
+    
+    signal_function = universal_gcg_hyperparameters.get("signal_function", average_target_logprobs_signal)
+    true_loss_function = universal_gcg_hyperparameters.get("true_loss_function", average_target_logprobs)
+    substitution_validity_function = universal_gcg_hyperparameters.get("substitution_validity_function", None)
+    signal_kwargs = universal_gcg_hyperparameters.get("signal_kwargs", None)
+    true_loss_kwargs = universal_gcg_hyperparameters.get("true_loss_kwargs", None)
+    randomness_strategy = universal_gcg_hyperparameters.get("randomness_strategy", DEFAULT_GCG_RANDOMNESS_STRATEGY)
+
+    if true_loss_kwargs is None:
+        true_loss_kwargs = {}
+    true_loss_kwargs["att_cacher"] = att_cacher
+
+    best_tokens_dicts_list = []
+    average_logprobs_list = []
+    best_true_losses_list = []
+
+    masks_data_list = [x["masks"] for x in input_tokenized_data_list]
+
+    if eval_initial:
+        initial_true_loss = true_loss_function(models, tokenizer, [torch.unsqueeze(x["tokens"], 0) for x in input_tokenized_data_list], masks_data_list, logger, **true_loss_kwargs)
+        best_true_losses_list.append(initial_true_loss)
+        logger.log(initial_true_loss, step_num=-1)
+        initial_average_logprobs = average_target_logprobs(models, tokenizer, [torch.unsqueeze(x["tokens"], 0) for x in input_tokenized_data_list], masks_data_list, logger)
+        initial_average_logprobs = initial_average_logprobs.item()
+        logger.log(initial_average_logprobs, step_num=-1)
+        average_logprobs_list.append(initial_average_logprobs)
+        best_tokens_dicts_list.append(attack_utility.form_best_tokens_dict(input_tokenized_data_list))
+
+
+    current_input_tokenized_data_list = input_tokenized_data_list
+    for step_num in range(universal_gcg_hyperparameters["max_steps"]):
+        
+        best_tokens_indices = signal_function(models, tokenizer, current_input_tokenized_data_list, universal_gcg_hyperparameters["topk"], logger, step_num=step_num, **(signal_kwargs or {}))
+        forward_eval_candidates = randomness_strategy(tokenizer, best_tokens_indices, current_input_tokenized_data_list, substitution_validity_function, universal_gcg_hyperparameters["forward_eval_candidates"])
+        true_losses = true_loss_function(models, tokenizer, forward_eval_candidates, masks_data_list, logger)
+        best_idx = torch.argmin(true_losses)
+        best_loss = true_losses[best_idx]
+        best_true_losses_list.append(best_loss)
+        best_tokens_dict = {
+            "prefix_tokens": forward_eval_candidates[0][best_idx][masks_data_list[0]["prefix_mask"]],
+            "suffix_tokens": forward_eval_candidates[0][best_idx][masks_data_list[0]["suffix_mask"]]
+        }
+
+        best_tokens_dicts_list.append(best_tokens_dict)
+        average_logprobs = average_target_logprobs(models, tokenizer, [torch.unsqueeze(x[best_idx], 0) for x in forward_eval_candidates], masks_data_list, logger)
+        average_logprobs_list.append(average_logprobs)
+        current_input_tokenized_data_list = attack_utility.update_all_tokens(best_tokens_dict, current_input_tokenized_data_list)
+
+    return best_tokens_dicts_list
