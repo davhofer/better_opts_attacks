@@ -161,7 +161,7 @@ def altogether_adversarial_opt(
         to_cache_logits = adversarial_parameters_dict.get("to_cache_logits", True)
         to_cache_attentions = adversarial_parameters_dict.get("to_cache_attentions", True)
 
-        best_output_tokens_sequences_dict = gcg.weakly_universal_gcg(models,
+        best_tokens_dicts_list, average_logprobs_list = gcg.weakly_universal_gcg(models,
             tokenizer,
             input_tokenized_data_list,
             target_output_str,
@@ -173,8 +173,10 @@ def altogether_adversarial_opt(
             to_cache_attentions=to_cache_attentions
         )
 
-        logger.log(best_output_tokens_sequences_dict)
-        return best_output_tokens_sequences_dict[-1]
+
+        logger.log(best_tokens_dicts_list)
+        logger.log(average_logprobs_list)
+        return best_tokens_dicts_list, average_logprobs_list
 
     if attack_algorithm == "universal_astra":
         early_stop = adversarial_parameters_dict.get("early_stop", True)
@@ -184,7 +186,7 @@ def altogether_adversarial_opt(
         to_cache_logits = adversarial_parameters_dict.get("to_cache_logits", True)
         to_cache_attentions = adversarial_parameters_dict.get("to_cache_attentions", True)
 
-        best_output_tokens_sequences_dict = universal_astra.weakly_universal_astra(models,
+        best_tokens_dicts_list, average_logprobs_list = universal_astra.weakly_universal_astra(models,
             tokenizer,
             input_tokenized_data_list,
             target_output_str,
@@ -197,9 +199,10 @@ def altogether_adversarial_opt(
             to_cache_logits=to_cache_logits,
             to_cache_attentions=to_cache_attentions
         )
-        logger.log(best_output_tokens_sequences_dict)
 
-        return best_output_tokens_sequences_dict[-1]
+        logger.log(best_tokens_dicts_list)
+        logger.log(average_logprobs_list)
+        return best_tokens_dicts_list, average_logprobs_list
 
 
 
@@ -267,6 +270,10 @@ def weak_universal_adversarial_opt(
     if attack_type == "incremental":
         increasing_batch_size = adversarial_parameters_dict.get("attack_batch_size", 2)
         increasing_index_sizes = [increasing_batch_size * j for j in range(len(input_tokenized_data_list) // increasing_batch_size)]
+        
+        all_tokens_sequences = []
+        all_logprobs_lists = []
+    
         for increasing_index_size in increasing_index_sizes:
             if increasing_index_size == 0:
                 continue
@@ -277,12 +284,21 @@ def weak_universal_adversarial_opt(
                 "attack_algorithm": adversarial_parameters_dict["attack_algorithm"],
                 "attack_hyperparameters": adversarial_parameters_dict["attack_hyperparameters"]
             }
-            best_output_tokens_dict = weak_universal_adversarial_opt(models, tokenizer, None, target_output_str, smaller_adversarial_parameters_dict, logger)
-            input_tokenized_data_list = attack_utility.update_all_tokens(best_output_tokens_dict, input_tokenized_data_list)
-        return best_output_tokens_dict
+            best_tokens_dicts_list, average_logprobs_list = weak_universal_adversarial_opt(models, tokenizer, None, target_output_str, smaller_adversarial_parameters_dict, logger)
+            logger.log(best_tokens_dicts_list, increasing_index_size=increasing_index_size)
+            logger.log(average_logprobs_list, increasing_index_size=increasing_index_size)
+            
+            all_tokens_sequences.append(best_tokens_dicts_list)
+            all_logprobs_lists.append(average_logprobs_list)
+
+            input_tokenized_data_list = attack_utility.update_all_tokens([best_tokens_dicts_list][-1], input_tokenized_data_list)
+        
+        logger.log(all_tokens_sequences)
+        logger.log(all_logprobs_lists)
+        return all_tokens_sequences, all_logprobs_lists
     
     elif attack_type == "altogether":
-        best_output_tokens_dict = altogether_adversarial_opt(models, tokenizer, input_tokenized_data_list, target_output_str, adversarial_parameters_dict, logger)
-        return best_output_tokens_dict
+        best_tokens_dicts_list, average_logprobs_list = altogether_adversarial_opt(models, tokenizer, input_tokenized_data_list, target_output_str, adversarial_parameters_dict, logger)
+        return [best_tokens_dicts_list], [average_logprobs_list]
     else:
         raise ValueError(f"Only \"incremental\" and \"altogether\" are supported as of now.")

@@ -364,19 +364,22 @@ def weakly_universal_gcg(
 
     best_tokens_dicts_list = []
     average_logprobs_list = []
-    best_true_losses_list = []
 
     masks_data_list = [x["masks"] for x in input_tokenized_data_list]
 
     if eval_initial:
         initial_true_loss = true_loss_function(models, tokenizer, [torch.unsqueeze(x["tokens"], 0) for x in input_tokenized_data_list], masks_data_list, logger, **true_loss_kwargs)
-        best_true_losses_list.append(initial_true_loss)
         logger.log(initial_true_loss, step_num=-1)
         initial_average_logprobs = average_target_logprobs(models, tokenizer, [torch.unsqueeze(x["tokens"], 0) for x in input_tokenized_data_list], masks_data_list, logger)
         initial_average_logprobs = initial_average_logprobs.item()
         logger.log(initial_average_logprobs, step_num=-1)
         average_logprobs_list.append(initial_average_logprobs)
         best_tokens_dicts_list.append(attack_utility.form_best_tokens_dict(input_tokenized_data_list))
+
+    best_tokens_dicts_chunk = []
+    true_losses_chunk = []
+    current_best_true_loss_chunk = []
+    logprobs_chunk = []
 
 
     current_input_tokenized_data_list = input_tokenized_data_list
@@ -385,17 +388,31 @@ def weakly_universal_gcg(
         best_tokens_indices = signal_function(models, tokenizer, current_input_tokenized_data_list, universal_gcg_hyperparameters["topk"], logger, step_num=step_num, **(signal_kwargs or {}))
         forward_eval_candidates = randomness_strategy(tokenizer, best_tokens_indices, current_input_tokenized_data_list, substitution_validity_function, universal_gcg_hyperparameters["forward_eval_candidates"])
         true_losses = true_loss_function(models, tokenizer, forward_eval_candidates, masks_data_list, logger)
+        true_losses_chunk.append(true_losses)
         best_idx = torch.argmin(true_losses)
         best_loss = true_losses[best_idx]
-        best_true_losses_list.append(best_loss)
+        current_best_true_loss_chunk.append(best_loss)
         best_tokens_dict = {
             "prefix_tokens": forward_eval_candidates[0][best_idx][masks_data_list[0]["prefix_mask"]],
             "suffix_tokens": forward_eval_candidates[0][best_idx][masks_data_list[0]["suffix_mask"]]
         }
-
+        best_tokens_dicts_chunk.append(best_tokens_dict)
         best_tokens_dicts_list.append(best_tokens_dict)
         average_logprobs = average_target_logprobs(models, tokenizer, [torch.unsqueeze(x[best_idx], 0) for x in forward_eval_candidates], masks_data_list, logger)
-        average_logprobs_list.append(average_logprobs)
+        logprobs_chunk.append(average_logprobs.item())
+        average_logprobs_list.append(average_logprobs.item())
         current_input_tokenized_data_list = attack_utility.update_all_tokens(best_tokens_dict, current_input_tokenized_data_list)
 
-    return best_tokens_dicts_list
+        if (step_num + 1) % 10 == 0:
+            logger.log(true_losses_chunk, step_num=step_num)
+            logger.log(current_best_true_loss_chunk, step_num=step_num)
+            logger.log(best_tokens_dicts_chunk, step_num=step_num)
+            logger.log(logprobs_chunk, step_num=step_num)
+
+            true_losses_chunk = []
+            current_best_true_loss_chunk = []
+            logprobs_chunk = []
+            best_tokens_dicts_chunk = []
+
+
+    return best_tokens_dicts_list, average_logprobs_list
