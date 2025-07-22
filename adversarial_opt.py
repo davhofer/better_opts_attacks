@@ -291,7 +291,7 @@ def weak_universal_adversarial_opt(
             all_tokens_sequences.append(best_tokens_dicts_list)
             all_logprobs_lists.append(average_logprobs_list)
 
-            input_tokenized_data_list = attack_utility.update_all_tokens([best_tokens_dicts_list][-1], input_tokenized_data_list)
+            input_tokenized_data_list = attack_utility.update_all_tokens(best_tokens_dicts_list[0][-1], input_tokenized_data_list)
         
         logger.log(all_tokens_sequences)
         logger.log(all_logprobs_lists)
@@ -299,6 +299,8 @@ def weak_universal_adversarial_opt(
     
     elif attack_type == "altogether":
         best_tokens_dicts_list, average_logprobs_list = altogether_adversarial_opt(models, tokenizer, input_tokenized_data_list, target_output_str, adversarial_parameters_dict, logger)
+        logger.log(best_tokens_dicts_list)
+        logger.log(average_logprobs_list)
         return [best_tokens_dicts_list], [average_logprobs_list]
     else:
         raise ValueError(f"Only \"incremental\" and \"altogether\" are supported as of now.")

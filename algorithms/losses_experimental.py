@@ -9,6 +9,9 @@ import copy
 import sys
 import time
 import pickle
+import threading
+import queue
+from concurrent.futures import ThreadPoolExecutor
 
 import utils.attack_utility as attack_utility
 import utils.experiment_logger as experiment_logger
@@ -737,3 +740,265 @@ def clip_cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, mas
     batch_size = input_points.shape[0]
     final_tensor = torch.transpose(torch.unsqueeze(CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ, dim=0).expand(batch_size, -1, -1).unsqueeze(dim=-1).expand(-1, -1, -1, len(masks_data["target_mask"])), 0, 1)
     return final_tensor
+
+def average_attention_loss_signal(
+    models,
+    tokenizer,
+    input_tokenized_data_list,
+    gcg_topk,
+    logger,
+    *,
+    prob_dist_metric,
+    ideal_attentions,
+    layer_weight_strategy,
+    normalize_grads_before_accumulation = True,
+    canonical_device_idx = 0,
+    **kwargs
+):
+    num_elements_per_batch = len(input_tokenized_data_list) // len(models)
+    input_tokenized_data_list_batches = [input_tokenized_data_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
+
+    grads_list = []
+    for model, input_tokenized_data_list_batch in zip(models, input_tokenized_data_list_batches):
+        grads_list_batch = []
+        for input_tokenized_data in input_tokenized_data_list_batch:
+            
+            input_points = input_tokenized_data["tokens"]
+            masks_data = input_tokenized_data["masks"]
+
+            ideal_attention_kwargs = kwargs.get("ideal_attentions_kwargs", {})
+            layer_weight_kwargs = kwargs.get("layer_weight_kwargs", {})
+
+            ideal_attentions = smart_ideal_attentions(model, tokenizer, ideal_attentions, input_points, masks_data, **ideal_attention_kwargs)
+            layer_weight_strategy = smart_layer_weight_strategy(model, tokenizer, layer_weight_strategy, ideal_attentions, input_points, masks_data, logger, **layer_weight_kwargs)
+
+            optim_mask: torch.tensor = masks_data["optim_mask"]
+            target_mask: torch.tensor = masks_data["target_mask"]
+            
+            one_hot_tensor = torch.nn.functional.one_hot(input_points.clone().detach(), num_classes=len(tokenizer.vocab)).to(dtype=model.dtype)
+            one_hot_tensor.requires_grad_()
+            embedding_tensor = model.get_input_embeddings().weight[:len(tokenizer.vocab)]
+            inputs_embeds = torch.unsqueeze(one_hot_tensor.to(embedding_tensor.device) @ embedding_tensor, 0)
+            model_output = model(inputs_embeds=inputs_embeds, output_attentions=True, return_dict=True)
+            true_attentions = torch.stack([attention[:, :, target_mask - 1, :] for attention in model_output.attentions])
+
+            loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions, true_attentions, logger=logger, layer_weight_strategy=layer_weight_strategy)
+            loss_tensor.backward()
+
+            if normalize_grads_before_accumulation:
+                normalized_grad = one_hot_tensor.grad[optim_mask, :] / one_hot_tensor.grad[optim_mask, :].norm(dim=-1, keepdim=True)
+                grads_list_batch.append(normalized_grad)
+            else:
+                grads_list_batch.append(one_hot_tensor.grad[optim_mask, :])    
+        grads_list.append(torch.stack(grads_list_batch))
+    
+    device_moved_grad_list = []
+    for grads_list_batch_tensor in grads_list:
+        device_moved_grad_list.append(grads_list_batch_tensor.to(canonical_device_idx))
+    
+    final_grads = - torch.cat(device_moved_grad_list, dim=0).mean(dim=0)
+    best_tokens_indices = final_grads.topk(gcg_topk, dim=-1).indices
+    return best_tokens_indices
+
+class CachedAttentionLoss:
+
+    def _cache_init(self, models, tokenizer, input_tokenized_data_list):
+
+        num_elements_per_batch = len(input_tokenized_data_list) // len(models)
+        input_tokenized_data_list_batches = [input_tokenized_data_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
+                
+        for model, input_tokenized_data_list_batch in zip(models, input_tokenized_data_list_batches):
+            cache_object_batch = []
+            static_index_batch = []
+            for input_tokenized_data in input_tokenized_data_list_batch:
+                tokens = input_tokenized_data["tokens"]
+                masks_data = input_tokenized_data["masks"]
+                optim_mask = masks_data["optim_mask"]
+                static_index = min(optim_mask) - 1
+                static_tokens = tokens[:static_index]
+                past_key_values = model(input_ids=torch.unsqueeze(static_tokens, dim=0).to(model.device), use_cache=True).past_key_values
+                cache_object_batch.append(past_key_values)
+                static_index_batch.append(static_index)
+            self.cache_object.append(cache_object_batch)
+            self.static_indices.append(static_index_batch)
+
+    def _find_single_element_batch_size(self, model, input_tokenized_data, past_key_values, static_index):
+        with torch.no_grad():
+            tokens = input_tokenized_data["tokens"]
+            batch_size = attack_utility.DEFAULT_MAXIMUM_BATCH_SIZE
+            while batch_size > 1:
+                input_ids_sliced_batch = torch.unsqueeze(tokens, dim=0).expand(batch_size, -1)[:, static_index:]
+                batched_kv_cache = []
+                for keys_cached, values_cached in past_key_values:
+                    keys_cached_new = keys_cached.expand(batch_size, -1, -1, -1)
+                    values_cached_new = values_cached.expand(batch_size, -1, -1, -1)
+                    batched_kv_cache.append((keys_cached_new, values_cached_new))
+                try:
+                    dynamic_cache = transformers.DynamicCache.from_legacy_cache(batched_kv_cache)
+                    _ = model(
+                        input_ids = input_ids_sliced_batch.to(model.device),
+                        past_key_values = dynamic_cache,
+                        output_attentions = True
+                    )
+                    for pair in batched_kv_cache:
+                        del pair
+                    del batched_kv_cache
+                    del output, dynamic_cache
+                    torch.cuda.synchronize()
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    break
+                except torch.cuda.OutOfMemoryError:
+                    del dynamic_cache, batched_kv_cache
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    batch_size //= 2
+        
+        return batch_size // 2
+
+    def _batch_size_init(self, models, input_tokenized_data_list):
+
+        num_elements_per_batch = len(input_tokenized_data_list) // len(models)
+        input_tokenized_data_list_batches = [input_tokenized_data_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
+
+        for model, input_tokenized_data_list_batch, cache_object_batch, static_index_batch in zip(models, input_tokenized_data_list_batches, self.cache_object, self.static_indices):
+            per_device_batch_sizes = []
+            for input_tokenized_data, cache_object, static_index in zip(input_tokenized_data_list_batch, cache_object_batch, static_index_batch):
+                single_example_batch_size = self._find_single_element_batch_size(model, input_tokenized_data, cache_object, static_index)
+                per_device_batch_sizes.append(single_example_batch_size)
+            self.batch_sizes.append(per_device_batch_sizes)
+
+    def __init__(self):
+        self.is_inited = False
+        self.cache_object = []
+        self.batch_sizes = []
+        self.static_indices = []
+    
+    def _single_thread_att_cacher(
+        self,
+        model,
+        tokenizer,
+        input_points,
+        masks_data,
+        batch_size,
+        cache_object,
+        static_index,
+        logger
+    ):
+        input_points_sliced = input_points[:, static_index:]
+        data_split = torch.split(input_points_sliced, batch_size, dim=0)
+        for data_batch in data_split:
+            gc.collect()
+            torch.cuda.empty_cache()
+            new_legacy_cache = []
+            for key_cache, value_cache in cache_object:
+                new_legacy_cache.append((key_cache.expand(data_batch.shape[0], -1, -1, -1).clone(), value_cache.expand(data_batch.shape[0], -1, -1, -1).clone()))
+            with torch.no_grad():
+                output = model(input_ids=data_batch.to(model.device), past_key_values=transformers.DynamicCache.from_legacy_cache(new_legacy_cache), output_attentions=True)
+                logits = output.logits
+                attentions = output.attentions
+                yield logits, attentions
+                for pair in new_legacy_cache:
+                    del pair
+                del output, logits, attentions, new_legacy_cache
+                torch.cuda.synchronize()
+                gc.collect()
+                torch.cuda.empty_cache()
+
+    def _single_thread_call(
+        self,
+        model,
+        tokenizer,
+        batch_id,
+        input_points_list_batch,
+        masks_data_list_batch,
+        logger,
+        *,
+        prob_dist_metric,
+        ideal_attentions,
+        layer_weight_strategy,
+        **kwargs,
+    ):
+        ideal_attention_kwargs = kwargs.get("ideal_attentions_kwargs", {})
+        layer_weight_kwargs = kwargs.get("layer_weight_kwargs", {})
+
+        final_results_list = []
+        for input_points, masks_data, cache_object, static_index, batch_size in zip(input_points_list_batch, masks_data_list_batch, self.cache_object[batch_id], self.static_indices[batch_id], self.batch_sizes[batch_id]):
+            ideal_attentions = smart_ideal_attentions(model, tokenizer, ideal_attentions, input_points, masks_data, **ideal_attention_kwargs)
+            layer_weight_strategy = smart_layer_weight_strategy(model, tokenizer, layer_weight_strategy, ideal_attentions, input_points, masks_data, logger, **layer_weight_kwargs)
+
+            loss_tensors_list = []
+            target_mask = masks_data["target_mask"]
+            num_processed = 0
+            for _, batch_true_attentions in self._single_thread_att_cacher(model, tokenizer, input_points, masks_data, batch_size, cache_object, static_index, logger):  
+                true_attentions = torch.stack([attention[:, :, -(len(target_mask) + 1):- 1, :] for attention in batch_true_attentions])
+                loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions[:, num_processed:num_processed + true_attentions.shape[1], ...], true_attentions, logger=logger, layer_weight_strategy=layer_weight_strategy[:, num_processed:num_processed + true_attentions.shape[1], ...])
+                num_processed += true_attentions.shape[1]
+                loss_tensors_list.append(loss_tensor) 
+                del batch_true_attentions, true_attentions
+                gc.collect()
+                torch.cuda.empty_cache()  
+            final_results_list.append(torch.cat(loss_tensors_list))
+        return final_results_list
+
+    def __call__(self,
+        models,
+        tokenizer,
+        input_points_list,
+        masks_data_list,
+        logger,
+        *,
+        prob_dist_metric,
+        ideal_attentions,
+        layer_weight_strategy,
+        canonical_device_idx = 0,
+        step_num = None,
+        **kwargs             
+    ):
+        if not self.is_inited:
+            input_tokenized_data_list = [
+                {
+                    "tokens": input_points[0],
+                    "masks": masks_data
+                }
+                for (input_points, masks_data) in zip(input_points_list, masks_data_list)
+            ]
+            self._cache_init(models, tokenizer, input_tokenized_data_list)
+            self._batch_size_init(models, input_tokenized_data_list)
+            self.is_inited = True        
+        
+        results = []
+        with ThreadPoolExecutor(max_workers=len(models)) as executor:
+            future_to_models = [
+                executor.submit(self._single_thread_call,
+                                model,
+                                tokenizer,
+                                batch_id,
+                                input_points_list_batch,
+                                masks_data_list_batch,
+                                logger,
+                                prob_dist_metric=prob_dist_metric,
+                                ideal_attentions=ideal_attentions,
+                                layer_weight_strategy=layer_weight_strategy,
+                                canonical_device_idx=canonical_device_idx,
+                                step_num=step_num,
+                                **kwargs)
+                for batch_id, (model, input_points_list_batch, masks_data_list_batch) in enumerate(zip(models, input_points_list, masks_data_list))
+            ]
+
+            for idx, future in enumerate(future_to_models):
+                try:
+                    result = future.result()  # 5 minute timeout
+                    results.append((idx, result))
+                except Exception as exc:
+                    logger.error(f'Model {idx} generated an exception: {exc}')
+                    results.append((idx, None))  # or handle differently
+                    raise RuntimeError(f'Model {idx} generated an exception: {exc}')
+
+        results.sort(key = lambda x: x[0])
+        
+        stacked_results = []
+        for _, model_result in results:
+            stacked_results.append(torch.stack(model_result).to(f"cuda:{str(canonical_device_idx)}"))
+        final_stacked_results = torch.cat(stacked_results)
+        return final_stacked_results.mean(dim=0)

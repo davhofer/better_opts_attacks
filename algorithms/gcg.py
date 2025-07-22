@@ -347,7 +347,8 @@ def weakly_universal_gcg(
         raise ValueError(f"Just cache ffs. Or write your own implementation.")
 
     if to_cache_attentions:
-        att_cacher = attack_utility.CachedAverageBulkForward()
+        att_cacher = None
+        # att_cacher = attack_utility.CachedAverageBulkForward()
     else:
         raise ValueError(f"Just cache ffs. Or write your own implementation.")
     
