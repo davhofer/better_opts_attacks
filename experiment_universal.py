@@ -72,6 +72,8 @@ def train_on_secalign_dataset(
     input_tokenized_data_list, _ = attack_utility.generate_bulk_valid_input_tokenized_data(tokenizer, input_convs, target, initial_config, logger)
     input_tokenized_data_list = attack_utility.normalize_input_tokenized_data_list(input_tokenized_data_list)
 
+    logger.log(input_tokenized_data_list)
+
     universal_gcg_parameters_dict = {
         "attack_type": "incremental",
         "input_tokenized_data_list": input_tokenized_data_list,
@@ -105,7 +107,7 @@ def train_on_secalign_dataset(
                     "attention_mask_strategy": "payload_only"
                 }
             },
-            "true_loss_function": losses_experimental.CachedAttentionLoss,
+            "true_loss_function": losses_experimental.CachedAttentionLoss(),
             "true_loss_kwargs": {
                 "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
                 "layer_weight_strategy": losses_experimental.clip_cached_abs_grad_dolly_layer_weights,
