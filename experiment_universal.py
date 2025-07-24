@@ -74,34 +74,19 @@ def train_on_secalign_dataset(
 
     logger.log(input_tokenized_data_list)
 
-    universal_gcg_parameters_dict = {
-        "attack_type": "incremental",
-        "input_tokenized_data_list": input_tokenized_data_list,
-        "attack_algorithm": "universal_gcg",
-        "attack_hyperparameters": {
-            "max_steps": 500,
-            "topk": 256,
-            "forward_eval_candidates": 512,
-            "substitution_validity_function": filter_function
-        },
-    }
-    gcg_tokens_sequences, gcg_logprobs_lists = adversarial_opt.weak_universal_adversarial_opt(models, tokenizer, None, target, universal_gcg_parameters_dict, logger)
-    logger.log(gcg_tokens_sequences)
-    logger.log(gcg_logprobs_lists)
-
     universal_astra_parameters_dict = {
         "attack_type": "incremental",
         "input_tokenized_data_list": input_tokenized_data_list,
         "attack_algorithm": "universal_gcg",
         "attack_hyperparameters": {
-            "max_steps": 500,
+            "max_steps": 300,
             "topk": 256,
             "forward_eval_candidates": 512,
             "substitution_validity_function": filter_function,
             "signal_function": losses_experimental.average_attention_loss_signal,
             "signal_kwargs": {
                 "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
-                "layer_weight_strategy": losses_experimental.clip_cached_abs_grad_dolly_layer_weights,
+                "layer_weight_strategy": losses_experimental.ThreadSafeClippedSensitivities(),
                 "ideal_attentions": losses_experimental.uniform_ideal_attentions,
                 "ideal_attentions_kwargs": {
                     "attention_mask_strategy": "payload_only"
@@ -110,7 +95,7 @@ def train_on_secalign_dataset(
             "true_loss_function": losses_experimental.CachedAttentionLoss(),
             "true_loss_kwargs": {
                 "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
-                "layer_weight_strategy": losses_experimental.clip_cached_abs_grad_dolly_layer_weights,
+                "layer_weight_strategy": losses_experimental.ThreadSafeClippedSensitivities(),
                 "ideal_attentions": losses_experimental.uniform_ideal_attentions,
                 "ideal_attentions_kwargs": {
                     "attention_mask_strategy": "payload_only"
@@ -121,6 +106,21 @@ def train_on_secalign_dataset(
     astra_tokens_sequences, astra_logprobs_lists = adversarial_opt.weak_universal_adversarial_opt(models, tokenizer, None, target, universal_astra_parameters_dict, logger)
     logger.log(astra_tokens_sequences)
     logger.log(astra_logprobs_lists)
+
+    universal_gcg_parameters_dict = {
+        "attack_type": "incremental",
+        "input_tokenized_data_list": input_tokenized_data_list,
+        "attack_algorithm": "universal_gcg",
+        "attack_hyperparameters": {
+            "max_steps": 300,
+            "topk": 256,
+            "forward_eval_candidates": 512,
+        },
+        "substitution_validity_function": filter_function
+    }
+    gcg_tokens_sequences, gcg_logprobs_lists = adversarial_opt.weak_universal_adversarial_opt(models, tokenizer, None, target, universal_gcg_parameters_dict, logger)
+    logger.log(gcg_tokens_sequences)
+    logger.log(gcg_logprobs_lists)
 
 
 
@@ -145,12 +145,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--prefix-length",
         type=int,
-        default=25
     )
     parser.add_argument(
         "--suffix-length",
         type=int,
-        default=25
     )
     parser.add_argument(
         "--num-training-examples",

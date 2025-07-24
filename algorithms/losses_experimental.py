@@ -741,6 +741,53 @@ def clip_cached_abs_grad_dolly_layer_weights(model, tokenizer, input_points, mas
     final_tensor = torch.transpose(torch.unsqueeze(CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ, dim=0).expand(batch_size, -1, -1).unsqueeze(dim=-1).expand(-1, -1, -1, len(masks_data["target_mask"])), 0, 1)
     return final_tensor
 
+class ThreadSafeClippedSensitivities:
+    
+    _SENSITIVITIES = None
+    _lock = threading.Lock()
+    _initialized = False
+    _initialized_event = threading.Event()
+
+    def __call__(self,
+        model,
+        tokenizer,
+        input_points,
+        masks_data,
+        logger,
+        threshold = None,
+        quantile = 0.75             
+    ):
+        with ThreadSafeClippedSensitivities._lock:
+
+            if ThreadSafeClippedSensitivities._SENSITIVITIES is None:
+                # First thread sets the variable
+                _ = clip_cached_abs_grad_dolly_layer_weights(
+                    model,
+                    tokenizer,
+                    input_points,
+                    masks_data,
+                    logger,
+                    threshold,
+                    quantile
+                )
+                global CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ
+                ThreadSafeClippedSensitivities._SENSITIVITIES = CLIPPED_CACHED_DOLLY_LAYER_WEIGHT_OBJ
+                ThreadSafeClippedSensitivities._initialized_event.set()  # Signal other threads
+            else:
+                # Variable already set by another thread
+                pass
+        
+        # If we're not the setting thread, wait for initialization
+        if not ThreadSafeClippedSensitivities._initialized_event.is_set():
+            ThreadSafeClippedSensitivities._initialized_event.wait()  # Block until set
+        
+        # Your main call logic here
+        if input_points.dim() == 1:
+            input_points = torch.unsqueeze(input_points, dim=0)
+        batch_size = input_points.shape[0]
+        final_tensor = torch.transpose(torch.unsqueeze(ThreadSafeClippedSensitivities._SENSITIVITIES, dim=0).expand(batch_size, -1, -1).unsqueeze(dim=-1).expand(-1, -1, -1, len(masks_data["target_mask"])), 0, 1)
+        return final_tensor
+
 def average_attention_loss_signal(
     models,
     tokenizer,
@@ -769,8 +816,8 @@ def average_attention_loss_signal(
             ideal_attention_kwargs = kwargs.get("ideal_attentions_kwargs", {})
             layer_weight_kwargs = kwargs.get("layer_weight_kwargs", {})
 
-            ideal_attentions = smart_ideal_attentions(model, tokenizer, ideal_attentions, input_points, masks_data, **ideal_attention_kwargs)
-            layer_weight_strategy = smart_layer_weight_strategy(model, tokenizer, layer_weight_strategy, ideal_attentions, input_points, masks_data, logger, **layer_weight_kwargs)
+            ideal_attentions_tensor = smart_ideal_attentions(model, tokenizer, ideal_attentions, input_points, masks_data, **ideal_attention_kwargs)
+            layer_weight_strategy = smart_layer_weight_strategy(model, tokenizer, layer_weight_strategy, ideal_attentions_tensor, input_points, masks_data, logger, **layer_weight_kwargs)
 
             optim_mask: torch.tensor = masks_data["optim_mask"]
             target_mask: torch.tensor = masks_data["target_mask"]
@@ -782,7 +829,7 @@ def average_attention_loss_signal(
             model_output = model(inputs_embeds=inputs_embeds, output_attentions=True, return_dict=True)
             true_attentions = torch.stack([attention[:, :, target_mask - 1, :] for attention in model_output.attentions])
 
-            loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions, true_attentions, logger=logger, layer_weight_strategy=layer_weight_strategy)
+            loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions_tensor, true_attentions, logger=logger, layer_weight_strategy=layer_weight_strategy)
             loss_tensor.backward()
 
             if normalize_grads_before_accumulation:
@@ -835,7 +882,7 @@ class CachedAttentionLoss:
                     batched_kv_cache.append((keys_cached_new, values_cached_new))
                 try:
                     dynamic_cache = transformers.DynamicCache.from_legacy_cache(batched_kv_cache)
-                    _ = model(
+                    output = model(
                         input_ids = input_ids_sliced_batch.to(model.device),
                         past_key_values = dynamic_cache,
                         output_attentions = True
@@ -924,15 +971,15 @@ class CachedAttentionLoss:
 
         final_results_list = []
         for input_points, masks_data, cache_object, static_index, batch_size in zip(input_points_list_batch, masks_data_list_batch, self.cache_object[batch_id], self.static_indices[batch_id], self.batch_sizes[batch_id]):
-            ideal_attentions = smart_ideal_attentions(model, tokenizer, ideal_attentions, input_points, masks_data, **ideal_attention_kwargs)
-            layer_weight_strategy = smart_layer_weight_strategy(model, tokenizer, layer_weight_strategy, ideal_attentions, input_points, masks_data, logger, **layer_weight_kwargs)
+            ideal_attentions_tensor = smart_ideal_attentions(model, tokenizer, ideal_attentions, input_points, masks_data, **ideal_attention_kwargs)
+            layer_weight_strategy = smart_layer_weight_strategy(model, tokenizer, layer_weight_strategy, ideal_attentions_tensor, input_points, masks_data, logger, **layer_weight_kwargs)
 
             loss_tensors_list = []
             target_mask = masks_data["target_mask"]
             num_processed = 0
             for _, batch_true_attentions in self._single_thread_att_cacher(model, tokenizer, input_points, masks_data, batch_size, cache_object, static_index, logger):  
                 true_attentions = torch.stack([attention[:, :, -(len(target_mask) + 1):- 1, :] for attention in batch_true_attentions])
-                loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions[:, num_processed:num_processed + true_attentions.shape[1], ...], true_attentions, logger=logger, layer_weight_strategy=layer_weight_strategy[:, num_processed:num_processed + true_attentions.shape[1], ...])
+                loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions_tensor[:, num_processed:num_processed + true_attentions.shape[1], ...], true_attentions, logger=logger, layer_weight_strategy=layer_weight_strategy[:, num_processed:num_processed + true_attentions.shape[1], ...])
                 num_processed += true_attentions.shape[1]
                 loss_tensors_list.append(loss_tensor) 
                 del batch_true_attentions, true_attentions
@@ -967,6 +1014,10 @@ class CachedAttentionLoss:
             self._batch_size_init(models, input_tokenized_data_list)
             self.is_inited = True        
         
+        num_elements_per_batch = len(input_points_list) // len(models)
+        input_points_list_batches = [input_points_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
+        masks_data_list_batches = [masks_data_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
+
         results = []
         with ThreadPoolExecutor(max_workers=len(models)) as executor:
             future_to_models = [
@@ -983,7 +1034,7 @@ class CachedAttentionLoss:
                                 canonical_device_idx=canonical_device_idx,
                                 step_num=step_num,
                                 **kwargs)
-                for batch_id, (model, input_points_list_batch, masks_data_list_batch) in enumerate(zip(models, input_points_list, masks_data_list))
+                for batch_id, (model, input_points_list_batch, masks_data_list_batch) in enumerate(zip(models, input_points_list_batches, masks_data_list_batches))
             ]
 
             for idx, future in enumerate(future_to_models):
@@ -991,7 +1042,6 @@ class CachedAttentionLoss:
                     result = future.result()  # 5 minute timeout
                     results.append((idx, result))
                 except Exception as exc:
-                    logger.error(f'Model {idx} generated an exception: {exc}')
                     results.append((idx, None))  # or handle differently
                     raise RuntimeError(f'Model {idx} generated an exception: {exc}')
 

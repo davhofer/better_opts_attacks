@@ -388,7 +388,7 @@ def weakly_universal_gcg(
         
         best_tokens_indices = signal_function(models, tokenizer, current_input_tokenized_data_list, universal_gcg_hyperparameters["topk"], logger, step_num=step_num, **(signal_kwargs or {}))
         forward_eval_candidates = randomness_strategy(tokenizer, best_tokens_indices, current_input_tokenized_data_list, substitution_validity_function, universal_gcg_hyperparameters["forward_eval_candidates"])
-        true_losses = true_loss_function(models, tokenizer, forward_eval_candidates, masks_data_list, logger)
+        true_losses = true_loss_function(models, tokenizer, forward_eval_candidates, masks_data_list, logger, **(true_loss_kwargs or {}))
         true_losses_chunk.append(true_losses)
         best_idx = torch.argmin(true_losses)
         best_loss = true_losses[best_idx]
