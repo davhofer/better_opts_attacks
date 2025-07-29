@@ -79,7 +79,7 @@ def train_on_secalign_dataset(
         "input_tokenized_data_list": input_tokenized_data_list,
         "attack_algorithm": "universal_gcg",
         "attack_hyperparameters": {
-            "max_steps": 300,
+            "max_steps": 500,
             "topk": 256,
             "forward_eval_candidates": 512,
             "substitution_validity_function": filter_function,
@@ -112,7 +112,7 @@ def train_on_secalign_dataset(
         "input_tokenized_data_list": input_tokenized_data_list,
         "attack_algorithm": "universal_gcg",
         "attack_hyperparameters": {
-            "max_steps": 300,
+            "max_steps": 500,
             "topk": 256,
             "forward_eval_candidates": 512,
         },

@@ -788,6 +788,70 @@ class ThreadSafeClippedSensitivities:
         final_tensor = torch.transpose(torch.unsqueeze(ThreadSafeClippedSensitivities._SENSITIVITIES, dim=0).expand(batch_size, -1, -1).unsqueeze(dim=-1).expand(-1, -1, -1, len(masks_data["target_mask"])), 0, 1)
         return final_tensor
 
+def dataset_average_sensitivities(model, tokenizer, dataset, logger, threshold=None, quantile=0.75):
+    for input_tokenized_data in dataset:
+        single_attention_gradhook = SingleAttentionGradHook(model, input_tokenized_data)
+        single_attention_gradhook.accumulate_grads()
+        target_mask = input_tokenized_data["masks"]["target_mask"]
+        layer_wise_abs_grads_sums = [[]] * len(attack_utility._get_layer_obj(model))
+        for layer_idx in range(len(attack_utility._get_layer_obj(model))):
+            layer_wise_abs_grads_sums[layer_idx].append(torch.abs(torch.tril(single_attention_gradhook.attention_grads[layer_idx][0])[:, target_mask - 1, :]).mean(dim=-1).sum(dim=-1))
+    
+    layer_wise_abs_grads_means = [torch.mean(torch.stack(layer_wise_abs_grads_sums[layer_idx]), dim=0) for layer_idx in range(len(attack_utility._get_layer_obj(model)))]
+    return layer_wise_abs_grads_means
+
+
+class DynamicClippedSensitivities:
+    
+    _LOCAL_SENSITIVITIES = None
+    _lock = threading.Lock()
+    _initialized = False
+    _initialized_event = threading.Event()
+
+    def __call__(self,
+        model,
+        tokenizer,
+        input_points,
+        masks_data,
+        dataset,
+        step_num,
+        logger,
+        threshold = None,
+        quantile = 0.75,
+        step_frequency = 10      
+    ):
+
+        if step_num % step_frequency == 0: # recompute at step_frequencies
+            with DynamicClippedSensitivities._lock:
+                if DynamicClippedSensitivities._LOCAL_SENSITIVITIES is None:
+                    DynamicClippedSensitivities._LOCAL_SENSITIVITIES = {}
+
+                    # First thread sets the variable
+                    local_sensitivity = dataset_average_sensitivities(
+                        model,
+                        tokenizer,
+                        
+                        logger,
+                        threshold,
+                        quantile
+                    )
+                    DynamicClippedSensitivities._LOCAL_SENSITIVITIES[(step_num, len(masks_data))] = local_sensitivity
+                else:
+                    # Variable already set by another thread
+                    pass
+        
+        # If we're not the setting thread, wait for initialization
+        if not DynamicClippedSensitivities._initialized_event.is_set():
+            DynamicClippedSensitivities._initialized_event.wait()  # Block until set
+        
+        # Your main call logic here
+        if input_points.dim() == 1:
+            input_points = torch.unsqueeze(input_points, dim=0)
+        batch_size = input_points.shape[0]
+        final_tensor = torch.transpose(torch.unsqueeze(ThreadSafeClippedSensitivities._SENSITIVITIES, dim=0).expand(batch_size, -1, -1).unsqueeze(dim=-1).expand(-1, -1, -1, len(masks_data["target_mask"])), 0, 1)
+        return final_tensor
+
+
 def average_attention_loss_signal(
     models,
     tokenizer,
@@ -806,7 +870,7 @@ def average_attention_loss_signal(
     input_tokenized_data_list_batches = [input_tokenized_data_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
 
     grads_list = []
-    for model, input_tokenized_data_list_batch in zip(models, input_tokenized_data_list_batches):
+    for model, input_tokenized_data_list_batch in zip(models, input_tokenized_data_list_batches, strict=True):
         grads_list_batch = []
         for input_tokenized_data in input_tokenized_data_list_batch:
             
@@ -854,7 +918,7 @@ class CachedAttentionLoss:
         num_elements_per_batch = len(input_tokenized_data_list) // len(models)
         input_tokenized_data_list_batches = [input_tokenized_data_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
                 
-        for model, input_tokenized_data_list_batch in zip(models, input_tokenized_data_list_batches):
+        for model, input_tokenized_data_list_batch in zip(models, input_tokenized_data_list_batches, strict=True):
             cache_object_batch = []
             static_index_batch = []
             for input_tokenized_data in input_tokenized_data_list_batch:
@@ -908,19 +972,52 @@ class CachedAttentionLoss:
         num_elements_per_batch = len(input_tokenized_data_list) // len(models)
         input_tokenized_data_list_batches = [input_tokenized_data_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
 
-        for model, input_tokenized_data_list_batch, cache_object_batch, static_index_batch in zip(models, input_tokenized_data_list_batches, self.cache_object, self.static_indices):
+        for model, input_tokenized_data_list_batch, cache_object_batch, static_index_batch in zip(models, input_tokenized_data_list_batches, self.cache_object, self.static_indices, strict=True):
             per_device_batch_sizes = []
-            for input_tokenized_data, cache_object, static_index in zip(input_tokenized_data_list_batch, cache_object_batch, static_index_batch):
+            for input_tokenized_data, cache_object, static_index in zip(input_tokenized_data_list_batch, cache_object_batch, static_index_batch, strict=True):
                 single_example_batch_size = self._find_single_element_batch_size(model, input_tokenized_data, cache_object, static_index)
                 per_device_batch_sizes.append(single_example_batch_size)
             self.batch_sizes.append(per_device_batch_sizes)
 
+    def _input_matches_expected_pattern(self, input_points_list):
+
+        num_elements_per_batch = len(input_points_list) // self.num_models
+        input_points_list_batches = [input_points_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(self.num_models)]
+
+        for batch_idx, input_batch_list in enumerate(input_points_list_batches):
+            try:
+                expected_batch_list = self.current_data_structure[batch_idx]
+            except IndexError:
+                return False
+
+            try:
+                assert len(input_batch_list) == len(expected_batch_list)
+            except AssertionError:
+                return False
+        
+        return True
+
+
+    def _set_current_data_pattern(self, input_points_list):
+        
+        num_elements_per_batch = len(input_points_list) // self.num_models
+        input_points_list_batches = [input_points_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(self.num_models)]
+
+        _current_data_structure = [None] * self.num_models
+
+        for batch_idx, input_point_batch in enumerate(input_points_list_batches):
+            _current_data_structure[batch_idx] = [1] * len(input_point_batch)
+        
+        self.current_data_structure = _current_data_structure
+
     def __init__(self):
-        self.is_inited = False
+        self.num_models = None
+        self.current_data_structure = []
         self.cache_object = []
         self.batch_sizes = []
         self.static_indices = []
-    
+
+
     def _single_thread_att_cacher(
         self,
         model,
@@ -970,7 +1067,7 @@ class CachedAttentionLoss:
         layer_weight_kwargs = kwargs.get("layer_weight_kwargs", {})
 
         final_results_list = []
-        for input_points, masks_data, cache_object, static_index, batch_size in zip(input_points_list_batch, masks_data_list_batch, self.cache_object[batch_id], self.static_indices[batch_id], self.batch_sizes[batch_id]):
+        for input_points, masks_data, cache_object, static_index, batch_size in zip(input_points_list_batch, masks_data_list_batch, self.cache_object[batch_id], self.static_indices[batch_id], self.batch_sizes[batch_id], strict=True):
             ideal_attentions_tensor = smart_ideal_attentions(model, tokenizer, ideal_attentions, input_points, masks_data, **ideal_attention_kwargs)
             layer_weight_strategy = smart_layer_weight_strategy(model, tokenizer, layer_weight_strategy, ideal_attentions_tensor, input_points, masks_data, logger, **layer_weight_kwargs)
 
@@ -1002,17 +1099,23 @@ class CachedAttentionLoss:
         step_num = None,
         **kwargs             
     ):
-        if not self.is_inited:
+        if self.num_models is None:
+            self.num_models = len(models)
+        
+        if len(models) != self.num_models:
+            raise ValueError(f"How can you mess up the models parameter? Please do something useful.")
+
+        if not self._input_matches_expected_pattern(input_points_list):
             input_tokenized_data_list = [
                 {
                     "tokens": input_points[0],
                     "masks": masks_data
                 }
-                for (input_points, masks_data) in zip(input_points_list, masks_data_list)
+                for (input_points, masks_data) in zip(input_points_list, masks_data_list, strict=True)
             ]
             self._cache_init(models, tokenizer, input_tokenized_data_list)
             self._batch_size_init(models, input_tokenized_data_list)
-            self.is_inited = True        
+            self._set_current_data_pattern(input_points_list)
         
         num_elements_per_batch = len(input_points_list) // len(models)
         input_points_list_batches = [input_points_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
@@ -1034,7 +1137,7 @@ class CachedAttentionLoss:
                                 canonical_device_idx=canonical_device_idx,
                                 step_num=step_num,
                                 **kwargs)
-                for batch_id, (model, input_points_list_batch, masks_data_list_batch) in enumerate(zip(models, input_points_list_batches, masks_data_list_batches))
+                for batch_id, (model, input_points_list_batch, masks_data_list_batch) in enumerate(zip(models, input_points_list_batches, masks_data_list_batches, strict=True))
             ]
 
             for idx, future in enumerate(future_to_models):

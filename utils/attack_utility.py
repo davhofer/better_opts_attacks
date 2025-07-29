@@ -740,7 +740,7 @@ def generate_valid_input_tokenized_data(
 
         except Exception as e:
             INIT_TOKENIZATION_FAILED = f"The given initialization failed due to the following reasons - {str(e)}"
-            logger.log(INIT_TOKENIZATION_FAILED)
+            # logger.log(INIT_TOKENIZATION_FAILED)
             if new_init_config["strategy_type"] != "random":
                 raise ValueError(f"{INIT_TOKENIZATION_FAILED}")
             new_seed = int(time.time())
@@ -788,7 +788,7 @@ def generate_bulk_valid_input_tokenized_data(
                 input_tokenized_data_list.append(input_tokenized_data)
         except Exception as e:
             INIT_TOKENIZATION_FAILED = f"The given initialization failed due to the following reasons - {str(e)}"
-            logger.log(INIT_TOKENIZATION_FAILED)
+            # logger.log(INIT_TOKENIZATION_FAILED)
             if new_init_config["strategy_type"] != "random":
                 raise ValueError(f"{INIT_TOKENIZATION_FAILED}")
             new_seed = int(time.time())
@@ -1001,7 +1001,7 @@ class CachedAverageLogprobs:
         num_elements_per_batch = len(input_tokenized_data_list) // len(models)
         input_tokenized_data_list_batches = [input_tokenized_data_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
                 
-        for model, input_tokenized_data_list_batch in zip(models, input_tokenized_data_list_batches):
+        for model, input_tokenized_data_list_batch in zip(models, input_tokenized_data_list_batches, strict=True):
             cache_object_batch = []
             static_index_batch = []
             for input_tokenized_data in input_tokenized_data_list_batch:
@@ -1054,9 +1054,9 @@ class CachedAverageLogprobs:
         num_elements_per_batch = len(input_tokenized_data_list) // len(models)
         input_tokenized_data_list_batches = [input_tokenized_data_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
 
-        for model, input_tokenized_data_list_batch, cache_object_batch, static_index_batch in zip(models, input_tokenized_data_list_batches, self.cache_object, self.static_indices):
+        for model, input_tokenized_data_list_batch, cache_object_batch, static_index_batch in zip(models, input_tokenized_data_list_batches, self.cache_object, self.static_indices, strict=True):
             per_device_batch_sizes = []
-            for input_tokenized_data, cache_object, static_index in zip(input_tokenized_data_list_batch, cache_object_batch, static_index_batch):
+            for input_tokenized_data, cache_object, static_index in zip(input_tokenized_data_list_batch, cache_object_batch, static_index_batch, strict=True):
                 single_example_batch_size = self._find_single_element_batch_size(model, input_tokenized_data, cache_object, static_index)
                 per_device_batch_sizes.append(single_example_batch_size)
             self.batch_sizes.append(per_device_batch_sizes)
@@ -1075,7 +1075,7 @@ class CachedAverageLogprobs:
         batch_size_batch = self.batch_sizes[batch_id]
 
         losses_list_batch = []
-        for input_points, masks_data, past_key_values, static_index, batch_size in zip(input_points_list_batch, masks_data_list_batch, cache_object_batch, static_index_batch, batch_size_batch):
+        for input_points, masks_data, past_key_values, static_index, batch_size in zip(input_points_list_batch, masks_data_list_batch, cache_object_batch, static_index_batch, batch_size_batch, strict=True):
             if input_points.dim() == 1:
                 input_points = torch.unsqueeze(input_points, dim=0)
 
@@ -1105,26 +1105,63 @@ class CachedAverageLogprobs:
             losses_list_batch.append(losses_tensor)
         return losses_list_batch
 
+    def _input_matches_expected_pattern(self, input_points_list):
+
+        num_elements_per_batch = len(input_points_list) // self.num_models
+        input_points_list_batches = [input_points_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(self.num_models)]
+
+        for batch_idx, input_batch_list in enumerate(input_points_list_batches):
+            try:
+                expected_batch_list = self.current_data_structure[batch_idx]
+            except IndexError:
+                return False
+
+            try:
+                assert len(input_batch_list) == len(expected_batch_list)
+            except AssertionError:
+                return False
+        
+        return True
+
+
+    def _set_current_data_pattern(self, input_points_list):
+        
+        num_elements_per_batch = len(input_points_list) // self.num_models
+        input_points_list_batches = [input_points_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(self.num_models)]
+
+        _current_data_structure = [None] * self.num_models
+
+        for batch_idx, input_point_batch in enumerate(input_points_list_batches):
+            _current_data_structure[batch_idx] = [1] * len(input_point_batch)
+        
+        self.current_data_structure = _current_data_structure
 
     def __init__(self):
-        self.is_inited = False
+        self.num_models = None
+        self.current_data_structure = []
         self.cache_object = []
         self.batch_sizes = []
         self.static_indices = []
 
     def __call__(self, models, tokenizer, input_points_list, masks_data_list, logger, *, canonical_device_idx=0, **kwargs):
+        
+        if self.num_models is None:
+            self.num_models = len(models)
+        
+        if len(models) != self.num_models:
+            raise ValueError(f"How can you mess up the models parameter? Please do something useful.")
 
-        if not self.is_inited:
+        if not self._input_matches_expected_pattern(input_points_list):
             input_tokenized_data_list = [
                 {
                     "tokens": input_points[0],
                     "masks": masks_data
                 }
-                for (input_points, masks_data) in zip(input_points_list, masks_data_list)
+                for (input_points, masks_data) in zip(input_points_list, masks_data_list, strict=True)
             ]
             self._cache_init(models, tokenizer, input_tokenized_data_list)
             self._batch_size_init(models, input_tokenized_data_list)
-            self.is_inited = True
+            self._set_current_data_pattern(input_points_list)
 
         num_elements_per_batch = len(input_points_list) // len(models)
         input_points_list_batches = [input_points_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
@@ -1135,7 +1172,7 @@ class CachedAverageLogprobs:
         with ThreadPoolExecutor(max_workers=len(models)) as executor:
             future_to_models = [
                 executor.submit(self._single_thread_call, model, tokenizer, batch_id, input_points_list_batch, masks_data_list_batch, logger, **kwargs)
-                for batch_id, (model, input_points_list_batch, masks_data_list_batch) in enumerate(zip(models, input_points_list_batches, masks_data_list_batches))
+                for batch_id, (model, input_points_list_batch, masks_data_list_batch) in enumerate(zip(models, input_points_list_batches, masks_data_list_batches, strict=True))
             ]
 
             for idx, future in enumerate(future_to_models):
@@ -1160,7 +1197,7 @@ def normalize_mask(input_tokenized_data_list, mask_key):
     # Assumes masks are contiguous
     token_to_index_map_list = [
         {
-            x: idx for x, idx in zip(input_tokenized_data["tokens"][input_tokenized_data["masks"][mask_key]], input_tokenized_data["masks"][mask_key])
+            x: idx for x, idx in zip(input_tokenized_data["tokens"][input_tokenized_data["masks"][mask_key]], input_tokenized_data["masks"][mask_key], strict=True)
         }
         for input_tokenized_data in input_tokenized_data_list
     ]
