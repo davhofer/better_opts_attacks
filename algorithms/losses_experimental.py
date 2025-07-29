@@ -917,7 +917,9 @@ class CachedAttentionLoss:
 
         num_elements_per_batch = len(input_tokenized_data_list) // len(models)
         input_tokenized_data_list_batches = [input_tokenized_data_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
-                
+
+        _cache_object = []
+        _static_indices = []    
         for model, input_tokenized_data_list_batch in zip(models, input_tokenized_data_list_batches, strict=True):
             cache_object_batch = []
             static_index_batch = []
@@ -930,8 +932,11 @@ class CachedAttentionLoss:
                 past_key_values = model(input_ids=torch.unsqueeze(static_tokens, dim=0).to(model.device), use_cache=True).past_key_values
                 cache_object_batch.append(past_key_values)
                 static_index_batch.append(static_index)
-            self.cache_object.append(cache_object_batch)
-            self.static_indices.append(static_index_batch)
+            _cache_object.append(cache_object_batch)
+            _static_indices.append(static_index_batch)
+        
+        self.cache_object = _cache_object
+        self.static_indices = _static_indices
 
     def _find_single_element_batch_size(self, model, input_tokenized_data, past_key_values, static_index):
         with torch.no_grad():
@@ -972,12 +977,15 @@ class CachedAttentionLoss:
         num_elements_per_batch = len(input_tokenized_data_list) // len(models)
         input_tokenized_data_list_batches = [input_tokenized_data_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
 
+        _batch_sizes = []
         for model, input_tokenized_data_list_batch, cache_object_batch, static_index_batch in zip(models, input_tokenized_data_list_batches, self.cache_object, self.static_indices, strict=True):
             per_device_batch_sizes = []
             for input_tokenized_data, cache_object, static_index in zip(input_tokenized_data_list_batch, cache_object_batch, static_index_batch, strict=True):
                 single_example_batch_size = self._find_single_element_batch_size(model, input_tokenized_data, cache_object, static_index)
                 per_device_batch_sizes.append(single_example_batch_size)
-            self.batch_sizes.append(per_device_batch_sizes)
+            _batch_sizes.append(per_device_batch_sizes)
+        
+        self.batch_sizes = _batch_sizes
 
     def _input_matches_expected_pattern(self, input_points_list):
 
