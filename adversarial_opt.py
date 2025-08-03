@@ -115,6 +115,7 @@ def adversarial_opt(
                 "eval_initial": eval_initial,
             })
 
+
             logprobs_sequences, best_tokens_sequences = adversarial_opt(model,
                 tokenizer,
                 None,
@@ -152,7 +153,7 @@ def altogether_adversarial_opt(
     adversarial_parameters_dict: typing.Dict,
     logger: experiment_logger.ExperimentLogger,    
 ):
-    attack_algorithm = adversarial_parameters_dict.get("attack_algorithm", "universal_astra")
+    attack_algorithm = adversarial_parameters_dict.get("attack_algorithm", "universal_gcg")
     
     if attack_algorithm == "universal_gcg":
         
@@ -164,7 +165,6 @@ def altogether_adversarial_opt(
         best_tokens_dicts_list, average_logprobs_list = gcg.weakly_universal_gcg(models,
             tokenizer,
             input_tokenized_data_list,
-            target_output_str,
             adversarial_parameters_dict["attack_hyperparameters"],
             logger,
             generation_config=generation_config,
@@ -172,37 +172,72 @@ def altogether_adversarial_opt(
             to_cache_logits=to_cache_logits,
             to_cache_attentions=to_cache_attentions
         )
-
-
+        
         logger.log(best_tokens_dicts_list)
         logger.log(average_logprobs_list)
         return best_tokens_dicts_list, average_logprobs_list
+    
 
-    if attack_algorithm == "universal_astra":
-        early_stop = adversarial_parameters_dict.get("early_stop", True)
+    if attack_algorithm == "sequential":
+
+        attack_steps = adversarial_parameters_dict["attack_hyperparameters"]
+        assert isinstance(attack_steps, list)
+        assert all([isinstance(x, dict) for x in attack_steps])
+
+
+        early_stop = adversarial_parameters_dict.get("early_stop", False)
         eval_every_step = adversarial_parameters_dict.get("eval_every_step", False)
+        identical_outputs_before_stop = adversarial_parameters_dict.get("identical_outputs_before_stop", 5)
         generation_config = adversarial_parameters_dict.get("generation_config", attack_utility.DEFAULT_TEXT_GENERATION_CONFIG)
         eval_initial = adversarial_parameters_dict.get("eval_initial", True)
-        to_cache_logits = adversarial_parameters_dict.get("to_cache_logits", True)
-        to_cache_attentions = adversarial_parameters_dict.get("to_cache_attentions", True)
+        best_universal_choice_function = adversarial_parameters_dict.get("best_universal_choice_function", attack_utility.default_best_universal_choice_function)
 
-        best_tokens_dicts_list, average_logprobs_list = universal_astra.weakly_universal_astra(models,
-            tokenizer,
-            input_tokenized_data_list,
-            target_output_str,
-            adversarial_parameters_dict["attack_hyperparameters"],
-            logger,
-            early_stop=early_stop,
-            eval_every_step=eval_every_step,
-            generation_config=generation_config,
-            eval_initial=eval_initial,
-            to_cache_logits=to_cache_logits,
-            to_cache_attentions=to_cache_attentions
-        )
+        all_best_tokens_dicts_list = []
+        all_average_logprobs_list = []
 
-        logger.log(best_tokens_dicts_list)
-        logger.log(average_logprobs_list)
-        return best_tokens_dicts_list, average_logprobs_list
+        for attack_block, attack_config in enumerate(attack_steps):
+
+            if attack_block != 0:
+                eval_initial = False
+
+            logger.log(attack_block)
+            logger.log(attack_config)
+
+            attack_config.update({
+                "input_tokenized_data_list": input_tokenized_data_list,
+                "early_stop": early_stop,
+                "eval_every_step": eval_every_step,
+                "identical_outputs_before_stop": identical_outputs_before_stop,
+                "generation_config": generation_config,
+                "eval_initial": eval_initial,
+            })
+            
+            best_tokens_dicts_list, average_logprobs_list = altogether_adversarial_opt(
+                models,
+                tokenizer,
+                input_tokenized_data_list,
+                target_output_str,
+                attack_config,
+                logger
+            )
+
+            logger.log(best_tokens_dicts_list)
+            logger.log(average_logprobs_list)
+
+            all_best_tokens_dicts_list.extend(best_tokens_dicts_list)
+            all_average_logprobs_list.extend(average_logprobs_list)
+
+            del average_logprobs_list, best_tokens_dicts_list
+            gc.collect()
+            torch.cuda.empty_cache()
+
+            if attack_block != len(attack_steps) - 1:
+                input_tokenized_data_list = best_universal_choice_function(models, tokenizer, input_tokenized_data_list, all_best_tokens_dicts_list, logger, all_average_logprobs_list=all_average_logprobs_list)
+
+            torch.cuda.synchronize()
+            gc.collect()
+            torch.cuda.empty_cache()
+
 
 
 
@@ -278,12 +313,8 @@ def weak_universal_adversarial_opt(
             if increasing_index_size == 0:
                 continue
             increasing_input_tokenized_data_list = input_tokenized_data_list[:increasing_index_size]
-            smaller_adversarial_parameters_dict = {
-                "input_tokenized_data_list": increasing_input_tokenized_data_list,
-                "attack_type": "altogether",
-                "attack_algorithm": adversarial_parameters_dict["attack_algorithm"],
-                "attack_hyperparameters": adversarial_parameters_dict["attack_hyperparameters"]
-            }
+            smaller_adversarial_parameters_dict = adversarial_parameters_dict["per_incremental_step"]
+            smaller_adversarial_parameters_dict["input_tokenized_data_list"] = increasing_input_tokenized_data_list
             best_tokens_dicts_list, average_logprobs_list = weak_universal_adversarial_opt(models, tokenizer, None, target_output_str, smaller_adversarial_parameters_dict, logger)
             logger.log(best_tokens_dicts_list, increasing_index_size=increasing_index_size)
             logger.log(average_logprobs_list, increasing_index_size=increasing_index_size)

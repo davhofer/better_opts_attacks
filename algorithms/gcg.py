@@ -325,12 +325,14 @@ def DEFAULT_GCG_RANDOMNESS_STRATEGY(tokenizer, best_tokens_indices, input_tokeni
     
     return candidates_list
 
+def DEFAULT_ON_STEP(*args, **kwargs):
+    pass
+
 @experiment_logger.log_parameters(exclude=["models", "tokenizer"])
 def weakly_universal_gcg(
     models: list[transformers.AutoModelForCausalLM],
     tokenizer: transformers.AutoTokenizer,
     input_tokenized_data_list: typing.List[typing.Dict],
-    target_output_str: str,
     universal_gcg_hyperparameters: typing.Dict,
     logger: experiment_logger.ExperimentLogger,
     *,
@@ -359,6 +361,11 @@ def weakly_universal_gcg(
     true_loss_kwargs = universal_gcg_hyperparameters.get("true_loss_kwargs", None)
     randomness_strategy = universal_gcg_hyperparameters.get("randomness_strategy", DEFAULT_GCG_RANDOMNESS_STRATEGY)
 
+    on_step_begin = universal_gcg_hyperparameters.get("on_step_begin", DEFAULT_ON_STEP)
+    on_step_begin_kwargs = universal_gcg_hyperparameters.get("on_step_begin_kwargs", {})
+    on_step_end = universal_gcg_hyperparameters.get("on_step_end", DEFAULT_ON_STEP)
+    on_step_end_kwargs = universal_gcg_hyperparameters.get("on_step_end_kwargs", {})
+
     if true_loss_kwargs is None:
         true_loss_kwargs = {}
     true_loss_kwargs["att_cacher"] = att_cacher
@@ -385,10 +392,12 @@ def weakly_universal_gcg(
 
     current_input_tokenized_data_list = input_tokenized_data_list
     for step_num in range(universal_gcg_hyperparameters["max_steps"]):
-        
+
+        step_begin_state = on_step_begin(models, tokenizer, current_input_tokenized_data_list, universal_gcg_hyperparameters, logger, step_num=step_num, **on_step_begin_kwargs)
+
         best_tokens_indices = signal_function(models, tokenizer, current_input_tokenized_data_list, universal_gcg_hyperparameters["topk"], logger, step_num=step_num, **(signal_kwargs or {}))
         forward_eval_candidates = randomness_strategy(tokenizer, best_tokens_indices, current_input_tokenized_data_list, substitution_validity_function, universal_gcg_hyperparameters["forward_eval_candidates"])
-        true_losses = true_loss_function(models, tokenizer, forward_eval_candidates, masks_data_list, logger, **(true_loss_kwargs or {}))
+        true_losses = true_loss_function(models, tokenizer, forward_eval_candidates, masks_data_list, logger, step_num=step_num, **(true_loss_kwargs or {}))
         true_losses_chunk.append(true_losses)
         best_idx = torch.argmin(true_losses)
         best_loss = true_losses[best_idx]
@@ -414,6 +423,8 @@ def weakly_universal_gcg(
             current_best_true_loss_chunk = []
             logprobs_chunk = []
             best_tokens_dicts_chunk = []
+        
+        step_end_state = on_step_end(models, tokenizer, current_input_tokenized_data_list, universal_gcg_hyperparameters, logger, step_num=step_num, **on_step_end_kwargs)
 
 
     return best_tokens_dicts_list, average_logprobs_list

@@ -480,6 +480,7 @@ def uniform_ideal_attentions(
     masks_data,
     *,
     attention_mask_strategy,
+    **kwargs
 ):
     if input_points.dim() == 1:
         input_points = torch.unsqueeze(input_points, dim=0)
@@ -788,69 +789,90 @@ class ThreadSafeClippedSensitivities:
         final_tensor = torch.transpose(torch.unsqueeze(ThreadSafeClippedSensitivities._SENSITIVITIES, dim=0).expand(batch_size, -1, -1).unsqueeze(dim=-1).expand(-1, -1, -1, len(masks_data["target_mask"])), 0, 1)
         return final_tensor
 
-def dataset_average_sensitivities(model, tokenizer, dataset, logger, threshold=None, quantile=0.75):
+def dataset_average_sensitivities(model, tokenizer, dataset, logger):
+    
+    layer_wise_abs_grads_sums = []
+    for _ in range(len(attack_utility._get_layer_obj(model))):
+        layer_wise_abs_grads_sums.append([])
     for input_tokenized_data in dataset:
         single_attention_gradhook = SingleAttentionGradHook(model, input_tokenized_data)
         single_attention_gradhook.accumulate_grads()
         target_mask = input_tokenized_data["masks"]["target_mask"]
-        layer_wise_abs_grads_sums = [[]] * len(attack_utility._get_layer_obj(model))
         for layer_idx in range(len(attack_utility._get_layer_obj(model))):
             layer_wise_abs_grads_sums[layer_idx].append(torch.abs(torch.tril(single_attention_gradhook.attention_grads[layer_idx][0])[:, target_mask - 1, :]).mean(dim=-1).sum(dim=-1))
     
     layer_wise_abs_grads_means = [torch.mean(torch.stack(layer_wise_abs_grads_sums[layer_idx]), dim=0) for layer_idx in range(len(attack_utility._get_layer_obj(model)))]
-    return layer_wise_abs_grads_means
+    return torch.stack(layer_wise_abs_grads_means)
 
 
 class DynamicClippedSensitivities:
     
-    _LOCAL_SENSITIVITIES = None
-    _lock = threading.Lock()
-    _initialized = False
-    _initialized_event = threading.Event()
+    _LOCAL_SENSITIVITIES = {}
+    step_frequency: int = None
+
+    @classmethod
+    def reset_sensitivities(cls,
+        models,
+        tokenizer,
+        input_tokenized_data_list,
+        universal_gcg_hyperparams,
+        logger,
+        step_num: int,
+        step_frequency: int,
+        **kwargs
+    ):
+        cls.step_frequency = step_frequency
+        if (step_num > 0) and (step_num % step_frequency != 0):
+            return
+        else:
+            if step_num > 0:
+                local_sensitivity = dataset_average_sensitivities(
+                    models[0],
+                    tokenizer,
+                    input_tokenized_data_list,
+                    logger
+                )
+            else:
+                local_sensitivity = abs_grad_dolly_layer_weights(
+                    models[0],
+                    tokenizer,
+                    {
+                        "tokens": torch.unsqueeze(input_tokenized_data_list[0]["tokens"], dim=0),
+                        "masks": input_tokenized_data_list[0]["masks"],
+                    },
+                    logger
+                )
+            
+            logger.log(local_sensitivity, step_num=step_num, dataset_size=len(input_tokenized_data_list))
+            DynamicClippedSensitivities._LOCAL_SENSITIVITIES[(step_num // cls.step_frequency, len(input_tokenized_data_list))] = local_sensitivity
 
     def __call__(self,
         model,
         tokenizer,
         input_points,
         masks_data,
-        dataset,
-        step_num,
         logger,
+        *,
+        step_num = None,
         threshold = None,
         quantile = 0.75,
-        step_frequency = 10      
+        step_frequency = 10,
+        **kwargs
     ):
 
-        if step_num % step_frequency == 0: # recompute at step_frequencies
-            with DynamicClippedSensitivities._lock:
-                if DynamicClippedSensitivities._LOCAL_SENSITIVITIES is None:
-                    DynamicClippedSensitivities._LOCAL_SENSITIVITIES = {}
+        current_last_key = sorted([x[1] for x in self.__class__._LOCAL_SENSITIVITIES.keys() if x[0] == step_num // self.__class__.step_frequency])[-1]
+        current_sensitivities = self.__class__._LOCAL_SENSITIVITIES[(step_num // self.__class__.step_frequency, current_last_key)]
 
-                    # First thread sets the variable
-                    local_sensitivity = dataset_average_sensitivities(
-                        model,
-                        tokenizer,
-                        
-                        logger,
-                        threshold,
-                        quantile
-                    )
-                    DynamicClippedSensitivities._LOCAL_SENSITIVITIES[(step_num, len(masks_data))] = local_sensitivity
-                else:
-                    # Variable already set by another thread
-                    pass
+        if threshold is None:
+            threshold = torch.quantile(current_sensitivities.to(torch.float), quantile)
+        final_sensitivities = current_sensitivities.clone()
+        final_sensitivities[final_sensitivities < threshold] = 0
         
-        # If we're not the setting thread, wait for initialization
-        if not DynamicClippedSensitivities._initialized_event.is_set():
-            DynamicClippedSensitivities._initialized_event.wait()  # Block until set
-        
-        # Your main call logic here
         if input_points.dim() == 1:
             input_points = torch.unsqueeze(input_points, dim=0)
         batch_size = input_points.shape[0]
-        final_tensor = torch.transpose(torch.unsqueeze(ThreadSafeClippedSensitivities._SENSITIVITIES, dim=0).expand(batch_size, -1, -1).unsqueeze(dim=-1).expand(-1, -1, -1, len(masks_data["target_mask"])), 0, 1)
+        final_tensor = torch.transpose(torch.unsqueeze(final_sensitivities, dim=0).expand(batch_size, -1, -1).unsqueeze(dim=-1).expand(-1, -1, -1, len(masks_data["target_mask"])), 0, 1)
         return final_tensor
-
 
 def average_attention_loss_signal(
     models,
@@ -878,7 +900,9 @@ def average_attention_loss_signal(
             masks_data = input_tokenized_data["masks"]
 
             ideal_attention_kwargs = kwargs.get("ideal_attentions_kwargs", {})
+            ideal_attention_kwargs.update(kwargs)
             layer_weight_kwargs = kwargs.get("layer_weight_kwargs", {})
+            layer_weight_kwargs.update(kwargs)
 
             ideal_attentions_tensor = smart_ideal_attentions(model, tokenizer, ideal_attentions, input_points, masks_data, **ideal_attention_kwargs)
             layer_weight_strategy = smart_layer_weight_strategy(model, tokenizer, layer_weight_strategy, ideal_attentions_tensor, input_points, masks_data, logger, **layer_weight_kwargs)
@@ -1072,7 +1096,9 @@ class CachedAttentionLoss:
         **kwargs,
     ):
         ideal_attention_kwargs = kwargs.get("ideal_attentions_kwargs", {})
+        ideal_attention_kwargs.update(kwargs)
         layer_weight_kwargs = kwargs.get("layer_weight_kwargs", {})
+        layer_weight_kwargs.update(kwargs)
 
         final_results_list = []
         for input_points, masks_data, cache_object, static_index, batch_size in zip(input_points_list_batch, masks_data_list_batch, self.cache_object[batch_id], self.static_indices[batch_id], self.batch_sizes[batch_id], strict=True):

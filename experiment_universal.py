@@ -77,31 +77,94 @@ def train_on_secalign_dataset(
     universal_astra_parameters_dict = {
         "attack_type": "incremental",
         "input_tokenized_data_list": input_tokenized_data_list,
-        "attack_algorithm": "universal_gcg",
-        "attack_hyperparameters": {
-            "max_steps": 500,
-            "topk": 256,
-            "forward_eval_candidates": 512,
-            "substitution_validity_function": filter_function,
-            "signal_function": losses_experimental.average_attention_loss_signal,
-            "signal_kwargs": {
-                "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
-                "layer_weight_strategy": losses_experimental.ThreadSafeClippedSensitivities(),
-                "ideal_attentions": losses_experimental.uniform_ideal_attentions,
-                "ideal_attentions_kwargs": {
-                    "attention_mask_strategy": "payload_only"
+        "attack_batch_size": 2,
+        "per_incremental_step": {
+            "attack_type": "altogether",
+            # "attack_algorithm": "universal_gcg",
+            # "attack_hyperparameters": {
+            #     "max_steps": 500,
+            #     "topk": 256,
+            #     "forward_eval_candidates": 512,
+            #     "substitution_validity_function": filter_function,
+            #     "signal_function": losses_experimental.average_attention_loss_signal,
+            #     "signal_kwargs": {
+            #         "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
+            #         "layer_weight_strategy": losses_experimental.DynamicClippedSensitivities(),
+            #         "layer_weight_kwargs": {
+            #             "quantile": 0.75,
+            #         },
+            #         "ideal_attentions": losses_experimental.uniform_ideal_attentions,
+            #         "ideal_attentions_kwargs": {
+            #             "attention_mask_strategy": "payload_only"
+            #         }
+            #     },
+            #     "true_loss_function": losses_experimental.CachedAttentionLoss(),
+            #     "true_loss_kwargs": {
+            #         "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
+            #         "layer_weight_strategy": losses_experimental.DynamicClippedSensitivities(),
+            #         "layer_weight_kwargs": {
+            #             "quantile": 0.75,
+            #         },
+            #         "ideal_attentions": losses_experimental.uniform_ideal_attentions,
+            #         "ideal_attentions_kwargs": {
+            #             "attention_mask_strategy": "payload_only"
+            #         }
+            #     },
+            #     "on_step_begin": losses_experimental.DynamicClippedSensitivities.reset_sensitivities,
+            #     "on_step_begin_kwargs": {
+            #         "step_frequency": 20,
+            #     },
+            # },
+            "attack_algorithm": "sequential",
+            "attack_hyperparameters": [
+                {
+                    "attack_algorithm": "universal_gcg",
+                    "attack_hyperparameters": {
+                        "max_steps": 700,
+                        "topk": 256,
+                        "forward_eval_candidates": 512,
+                        "substitution_validity_function": filter_function,
+                        "signal_function": losses_experimental.average_attention_loss_signal,
+                        "signal_kwargs": {
+                            "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
+                            "layer_weight_strategy": losses_experimental.DynamicClippedSensitivities(),
+                            "layer_weight_kwargs": {
+                                "quantile": 0.75,
+                            },
+                            "ideal_attentions": losses_experimental.uniform_ideal_attentions,
+                            "ideal_attentions_kwargs": {
+                                "attention_mask_strategy": "payload_only"
+                            }
+                        },
+                        "true_loss_function": losses_experimental.CachedAttentionLoss(),
+                        "true_loss_kwargs": {
+                            "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
+                            "layer_weight_strategy": losses_experimental.DynamicClippedSensitivities(),
+                            "layer_weight_kwargs": {
+                                "quantile": 0.75,
+                            },
+                            "ideal_attentions": losses_experimental.uniform_ideal_attentions,
+                            "ideal_attentions_kwargs": {
+                                "attention_mask_strategy": "payload_only"
+                            }
+                        },
+                        "on_step_begin": losses_experimental.DynamicClippedSensitivities.reset_sensitivities,
+                        "on_step_begin_kwargs": {
+                            "step_frequency": 20,
+                        },
+                    }
+                },
+                {
+                    "attack_algorithm": "universal_gcg",
+                    "attack_hyperparameters": {
+                        "max_steps": 300,
+                        "topk": 256,
+                        "forward_eval_candidates": 512
+                    }
                 }
-            },
-            "true_loss_function": losses_experimental.CachedAttentionLoss(),
-            "true_loss_kwargs": {
-                "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
-                "layer_weight_strategy": losses_experimental.ThreadSafeClippedSensitivities(),
-                "ideal_attentions": losses_experimental.uniform_ideal_attentions,
-                "ideal_attentions_kwargs": {
-                    "attention_mask_strategy": "payload_only"
-                }
-            },
-        },
+            ],
+            "eval_initial": False,
+        }
     }
     astra_tokens_sequences, astra_logprobs_lists = adversarial_opt.weak_universal_adversarial_opt(models, tokenizer, None, target, universal_astra_parameters_dict, logger)
     logger.log(astra_tokens_sequences)
@@ -110,13 +173,18 @@ def train_on_secalign_dataset(
     universal_gcg_parameters_dict = {
         "attack_type": "incremental",
         "input_tokenized_data_list": input_tokenized_data_list,
-        "attack_algorithm": "universal_gcg",
-        "attack_hyperparameters": {
-            "max_steps": 500,
-            "topk": 256,
-            "forward_eval_candidates": 512,
-        },
-        "substitution_validity_function": filter_function
+        "attack_batch_size": 2,
+        "per_incremental_step": {
+            "attack_type": "altogether",
+            "attack_algorithm": "universal_gcg",
+            "attack_hyperparameters": {
+                "max_steps": 1000,
+                "topk": 256,
+                "forward_eval_candidates": 512,
+            },
+            "substitution_validity_function": filter_function,
+            "eval_initial": False,
+        }
     }
     gcg_tokens_sequences, gcg_logprobs_lists = adversarial_opt.weak_universal_adversarial_opt(models, tokenizer, None, target, universal_gcg_parameters_dict, logger)
     logger.log(gcg_tokens_sequences)
@@ -178,7 +246,7 @@ if __name__ == "__main__":
         ]
     indices_to_sample = [83, 167, 170, 50, 133, 82, 159, 105, 152, 203, 96, 125, 191, 15, 187, 162, 6, 88, 101, 185, 156, 109, 171, 195, 123, 190, 205, 158, 163, 178, 63, 134, 39, 197, 37, 95, 177, 93, 10, 147, 55, 115, 11, 128, 25, 189, 113, 106, 51, 146]
     indices_to_exclude = [50, 152, 125, 162, 88, 171, 123, 39, 55, 51]
-    indices_to_sample = [x for x in indices_to_sample if not x in indices_to_exclude]
+    indices_to_sample = [x for x in indices_to_sample if x not in indices_to_exclude]
 
     training_indices = random.sample(indices_to_sample, args.num_training_examples)
 
@@ -194,4 +262,5 @@ if __name__ == "__main__":
             traceback.print_exc()
             raise RuntimeError(f"Can't load model into GPU {gpu_id}")
     logger = experiment_logger.ExperimentLogger(f"{args.expt_folder_prefix}")
+    logger.log(training_indices)
     train_on_secalign_dataset(input_convs_formatted, training_indices, models, tokenizer, frontend_delimiters, logger, args.prefix_length, args.suffix_length, args.defense)

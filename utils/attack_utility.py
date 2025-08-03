@@ -1239,3 +1239,18 @@ def form_best_tokens_dict(input_tokenized_data_list):
         "prefix_tokens": input_tokenized_data_list[0]["tokens"][input_tokenized_data_list[0]["masks"]["prefix_mask"]],
         "suffix_tokens": input_tokenized_data_list[0]["tokens"][input_tokenized_data_list[0]["masks"]["suffix_mask"]]
     }
+
+def default_best_universal_choice_function(
+    models,
+    tokenizer,
+    input_tokenized_data_list,
+    all_best_tokens_dicts_list,
+    logger,
+    *,
+    all_average_logprobs_list,
+    **kwargs
+):
+    best_index = torch.argmin(all_average_logprobs_list)
+    best_output_tokens_dict = all_best_tokens_dicts_list[best_index]
+    new_input_tokenized_data_list = update_all_tokens(best_output_tokens_dict, input_tokenized_data_list)
+    return new_input_tokenized_data_list

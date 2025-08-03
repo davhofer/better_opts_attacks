@@ -12,3 +12,4 @@ hf_transfer
 bitsandbytes
 fschat
 sentencepiece
+agentdojo
