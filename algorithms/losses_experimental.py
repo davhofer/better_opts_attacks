@@ -1189,3 +1189,99 @@ class CachedAttentionLoss:
             stacked_results.append(torch.stack(model_result).to(f"cuda:{str(canonical_device_idx)}"))
         final_stacked_results = torch.cat(stacked_results)
         return final_stacked_results.mean(dim=0)
+
+
+class SumOfSensitivitiesLoss:
+
+    def __init__(self):
+        self.num_models = None
+
+    def _form_datasets_from_input_points(self, input_points_list, masks_data_list):
+        
+        all_datasets = []
+        for input_points_zipped in zip(*input_points_list, strict=True):
+            dataset_point = []
+            for input_point, masks_data in zip(input_points_zipped, masks_data_list, strict=True):
+                dataset_point.append(
+                    {
+                        "tokens": input_point,
+                        "masks": copy.deepcopy(masks_data)
+                    }
+                )
+            all_datasets.append(dataset_point)
+        
+        return all_datasets
+
+    def _single_thread_call(
+        self,
+        model,
+        tokenizer,
+        datasetified_points_batch,
+        batch_id,
+        logger,
+        **kwargs,        
+    ):
+        all_sensitivities = []
+        for datasetified_point in datasetified_points_batch:
+            sensitivity = dataset_average_sensitivities(model, tokenizer, datasetified_point, logger)
+            all_sensitivities.append(sensitivity.sum())
+        return torch.tensor(all_sensitivities)
+
+    def __call__(self,
+        models,
+        tokenizer,
+        input_points_list,
+        masks_data_list,
+        logger,
+        *,
+        canonical_device_idx = 0,
+        step_num = None,
+        **kwargs             
+    ):
+        if self.num_models is None:
+            self.num_models = len(models)
+        
+        if len(models) != self.num_models:
+            raise ValueError(f"How can you mess up the models parameter? Please do something useful.")
+
+        # if not self._input_matches_expected_pattern(input_points_list):
+        #     input_tokenized_data_list = [
+        #         {
+        #             "tokens": input_points[0],
+        #             "masks": masks_data
+        #         }
+        #         for (input_points, masks_data) in zip(input_points_list, masks_data_list, strict=True)
+        #     ]
+        #     self._cache_init(models, tokenizer, input_tokenized_data_list)
+        #     self._batch_size_init(models, input_tokenized_data_list)
+        #     self._set_current_data_pattern(input_points_list)
+        
+        datasetified_points = self._form_datasets_from_input_points(input_points_list, masks_data_list)
+
+        num_elements_per_batch = len(datasetified_points) // len(models)
+        datasetified_points_batches = [datasetified_points[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
+
+        results = []
+        with ThreadPoolExecutor(max_workers=len(models)) as executor:
+            future_to_models = [
+                executor.submit(self._single_thread_call,
+                                model,
+                                tokenizer,
+                                datasetified_points_batch,
+                                batch_id,
+                                logger,
+                                **kwargs)
+                for batch_id, (model, datasetified_points_batch) in enumerate(zip(models, datasetified_points_batches, strict=True))
+            ]
+
+            for idx, future in enumerate(future_to_models):
+                try:
+                    result = future.result()  # 5 minute timeout
+                    results.append((idx, result))
+                except Exception as exc:
+                    results.append((idx, None))  # or handle differently
+                    raise RuntimeError(f'Model {idx} generated an exception: {exc}')
+
+        results.sort(key = lambda x: x[0])
+        
+        return torch.cat([result[1] for result in results])

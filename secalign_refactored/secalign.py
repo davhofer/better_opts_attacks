@@ -31,7 +31,7 @@ MODEL_REL_PATHS = {
     ("mistralai-instruct", "secalign"): "mistralai/Mistral-7B-Instruct-v0.1_dpo_NaiveCompletion_2025-03-12-12-01-27",
     
     ("meta-llama-instruct", "undefended"): "meta-llama/Meta-Llama-3-8B-Instruct",
-    ("meta-llama-instruct", "secalign"): "meta-llama/Meta-Llama-3-8B-Instruct_dpo_NaiveCompletion_2024-11-12-17-59-06-resized"
+    ("meta-llama-instruct", "secalign"): "meta-llama/Meta-Llama-3-8B-Instruct_dpo_NaiveCompletion_2024-11-12-17-59-06-resized",
 }
 
 def load_model_and_tokenizer(model_path, tokenizer_path=None, device="cuda:0", **kwargs):

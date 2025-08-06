@@ -1250,7 +1250,7 @@ def default_best_universal_choice_function(
     all_average_logprobs_list,
     **kwargs
 ):
-    best_index = torch.argmin(all_average_logprobs_list)
+    best_index = torch.argmin(torch.tensor(all_average_logprobs_list))
     best_output_tokens_dict = all_best_tokens_dicts_list[best_index]
     new_input_tokenized_data_list = update_all_tokens(best_output_tokens_dict, input_tokenized_data_list)
     return new_input_tokenized_data_list

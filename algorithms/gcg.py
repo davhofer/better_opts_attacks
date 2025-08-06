@@ -71,6 +71,21 @@ def rand_gcg_signal(
     best_tokens_indices = torch.stack([torch.randperm(len(tokenizer))[:gcg_topk] for _ in range(optim_mask.shape[0])])
     return best_tokens_indices
 
+def universal_rand_gcg_signal(
+    models,
+    tokenizer,
+    input_tokenized_data_list,
+    gcg_topk,
+    logger,
+    **kwargs
+):
+    optim_mask = input_tokenized_data_list[0]["masks"]["optim_mask"]
+
+    best_tokens_indices = torch.stack([torch.randperm(len(tokenizer))[:gcg_topk] for _ in range(optim_mask.shape[0])])
+    return best_tokens_indices
+
+    
+
 @experiment_logger.log_parameters(exclude=["model", "tokenizer"])
 def custom_gcg(
     model: transformers.AutoModelForCausalLM,

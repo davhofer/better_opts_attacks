@@ -77,7 +77,7 @@ def train_on_secalign_dataset(
     universal_astra_parameters_dict = {
         "attack_type": "incremental",
         "input_tokenized_data_list": input_tokenized_data_list,
-        "attack_batch_size": 2,
+        "attack_batch_size": 10,
         "per_incremental_step": {
             "attack_type": "altogether",
             # "attack_algorithm": "universal_gcg",
@@ -117,6 +117,17 @@ def train_on_secalign_dataset(
             # },
             "attack_algorithm": "sequential",
             "attack_hyperparameters": [
+                # {
+                #     "attack_algorithm": "universal_gcg",
+                #     "attack_hyperparameters": {
+                #         "max_steps": 200,
+                #         "topk": 256,
+                #         "forward_eval_candidates": 256,
+                #         "substitution_validity_function": filter_function,
+                #         "signal_function": gcg.universal_rand_gcg_signal,
+                #         "true_loss_function": losses_experimental.SumOfSensitivitiesLoss(),
+                #     },
+                # },
                 {
                     "attack_algorithm": "universal_gcg",
                     "attack_hyperparameters": {
@@ -129,7 +140,7 @@ def train_on_secalign_dataset(
                             "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
                             "layer_weight_strategy": losses_experimental.DynamicClippedSensitivities(),
                             "layer_weight_kwargs": {
-                                "quantile": 0.75,
+                                "quantile": 0.5,
                             },
                             "ideal_attentions": losses_experimental.uniform_ideal_attentions,
                             "ideal_attentions_kwargs": {
@@ -141,7 +152,7 @@ def train_on_secalign_dataset(
                             "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
                             "layer_weight_strategy": losses_experimental.DynamicClippedSensitivities(),
                             "layer_weight_kwargs": {
-                                "quantile": 0.75,
+                                "quantile": 0.5,
                             },
                             "ideal_attentions": losses_experimental.uniform_ideal_attentions,
                             "ideal_attentions_kwargs": {
@@ -150,7 +161,7 @@ def train_on_secalign_dataset(
                         },
                         "on_step_begin": losses_experimental.DynamicClippedSensitivities.reset_sensitivities,
                         "on_step_begin_kwargs": {
-                            "step_frequency": 20,
+                            "step_frequency": 50,
                         },
                     }
                 },
@@ -173,7 +184,7 @@ def train_on_secalign_dataset(
     universal_gcg_parameters_dict = {
         "attack_type": "incremental",
         "input_tokenized_data_list": input_tokenized_data_list,
-        "attack_batch_size": 2,
+        "attack_batch_size": 10,
         "per_incremental_step": {
             "attack_type": "altogether",
             "attack_algorithm": "universal_gcg",
