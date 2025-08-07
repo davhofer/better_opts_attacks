@@ -238,7 +238,7 @@ def altogether_adversarial_opt(
             gc.collect()
             torch.cuda.empty_cache()
 
-
+        return all_best_tokens_dicts_list, all_average_logprobs_list
 
 
 def weak_universal_adversarial_opt(
