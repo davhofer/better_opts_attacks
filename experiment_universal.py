@@ -80,54 +80,8 @@ def train_on_secalign_dataset(
         "attack_batch_size": 10,
         "per_incremental_step": {
             "attack_type": "altogether",
-            # "attack_algorithm": "universal_gcg",
-            # "attack_hyperparameters": {
-            #     "max_steps": 500,
-            #     "topk": 256,
-            #     "forward_eval_candidates": 512,
-            #     "substitution_validity_function": filter_function,
-            #     "signal_function": losses_experimental.average_attention_loss_signal,
-            #     "signal_kwargs": {
-            #         "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
-            #         "layer_weight_strategy": losses_experimental.DynamicClippedSensitivities(),
-            #         "layer_weight_kwargs": {
-            #             "quantile": 0.75,
-            #         },
-            #         "ideal_attentions": losses_experimental.uniform_ideal_attentions,
-            #         "ideal_attentions_kwargs": {
-            #             "attention_mask_strategy": "payload_only"
-            #         }
-            #     },
-            #     "true_loss_function": losses_experimental.CachedAttentionLoss(),
-            #     "true_loss_kwargs": {
-            #         "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
-            #         "layer_weight_strategy": losses_experimental.DynamicClippedSensitivities(),
-            #         "layer_weight_kwargs": {
-            #             "quantile": 0.75,
-            #         },
-            #         "ideal_attentions": losses_experimental.uniform_ideal_attentions,
-            #         "ideal_attentions_kwargs": {
-            #             "attention_mask_strategy": "payload_only"
-            #         }
-            #     },
-            #     "on_step_begin": losses_experimental.DynamicClippedSensitivities.reset_sensitivities,
-            #     "on_step_begin_kwargs": {
-            #         "step_frequency": 20,
-            #     },
-            # },
             "attack_algorithm": "sequential",
             "attack_hyperparameters": [
-                # {
-                #     "attack_algorithm": "universal_gcg",
-                #     "attack_hyperparameters": {
-                #         "max_steps": 200,
-                #         "topk": 256,
-                #         "forward_eval_candidates": 256,
-                #         "substitution_validity_function": filter_function,
-                #         "signal_function": gcg.universal_rand_gcg_signal,
-                #         "true_loss_function": losses_experimental.SumOfSensitivitiesLoss(),
-                #     },
-                # },
                 {
                     "attack_algorithm": "universal_gcg",
                     "attack_hyperparameters": {
@@ -140,7 +94,7 @@ def train_on_secalign_dataset(
                             "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
                             "layer_weight_strategy": losses_experimental.DynamicClippedSensitivities(),
                             "layer_weight_kwargs": {
-                                "quantile": 0.5,
+                                "quantile": 0.50,
                             },
                             "ideal_attentions": losses_experimental.uniform_ideal_attentions,
                             "ideal_attentions_kwargs": {
@@ -152,7 +106,7 @@ def train_on_secalign_dataset(
                             "prob_dist_metric": losses_experimental.pointwise_sum_of_differences_payload_only,
                             "layer_weight_strategy": losses_experimental.DynamicClippedSensitivities(),
                             "layer_weight_kwargs": {
-                                "quantile": 0.5,
+                                "quantile": 0.50,
                             },
                             "ideal_attentions": losses_experimental.uniform_ideal_attentions,
                             "ideal_attentions_kwargs": {
@@ -170,7 +124,8 @@ def train_on_secalign_dataset(
                     "attack_hyperparameters": {
                         "max_steps": 300,
                         "topk": 256,
-                        "forward_eval_candidates": 512
+                        "forward_eval_candidates": 512,
+                        "substitution_validity_function": filter_function,
                     }
                 }
             ],
@@ -192,8 +147,9 @@ def train_on_secalign_dataset(
                 "max_steps": 1000,
                 "topk": 256,
                 "forward_eval_candidates": 512,
+                "substitution_validity_function": filter_function,
+
             },
-            "substitution_validity_function": filter_function,
             "eval_initial": False,
         }
     }
