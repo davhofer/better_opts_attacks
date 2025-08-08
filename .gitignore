@@ -172,3 +172,4 @@ cython_debug/
 logs/*
 *.out
 secalign_refactored/secalign_models/*
+ih_models/*
