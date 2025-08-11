@@ -946,7 +946,7 @@ def average_attention_loss_signal(
         for param in model.parameters():
             param.grad = None
 
-        torch.synchronize()
+        torch.cuda.synchronize()
         gc.collect()
         torch.cuda.empty_cache()
 
