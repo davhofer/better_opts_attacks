@@ -441,5 +441,7 @@ def weakly_universal_gcg(
         
         step_end_state = on_step_end(models, tokenizer, current_input_tokenized_data_list, universal_gcg_hyperparameters, logger, step_num=step_num, **on_step_end_kwargs)
 
+        gc.collect()
+        torch.cuda.empty_cache()
 
     return best_tokens_dicts_list, average_logprobs_list

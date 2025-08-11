@@ -933,19 +933,33 @@ def average_attention_loss_signal(
             loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions_tensor, true_attentions, logger=logger, layer_weight_strategy=layer_weight_strategy)
             loss_tensor.backward()
 
+            one_hot_tensor.detach()
+
             if normalize_grads_before_accumulation:
                 normalized_grad = one_hot_tensor.grad[optim_mask, :] / one_hot_tensor.grad[optim_mask, :].norm(dim=-1, keepdim=True)
                 grads_list_batch.append(normalized_grad)
             else:
                 grads_list_batch.append(one_hot_tensor.grad[optim_mask, :])    
         grads_list.append(torch.stack(grads_list_batch))
-    
+
+        model.eval()    
+        for param in model.parameters():
+            param.grad = None
+
+        torch.synchronize()
+        gc.collect()
+        torch.cuda.empty_cache()
+
     device_moved_grad_list = []
     for grads_list_batch_tensor in grads_list:
         device_moved_grad_list.append(grads_list_batch_tensor.to(canonical_device_idx))
     
     final_grads = - torch.cat(device_moved_grad_list, dim=0).mean(dim=0)
     best_tokens_indices = final_grads.topk(gcg_topk, dim=-1).indices
+
+    gc.collect()
+    torch.cuda.empty_cache()
+
     return best_tokens_indices
 
 class CachedAttentionLoss:
