@@ -601,6 +601,10 @@ class SingleAttentionGradHook:
             # self.attention_grads[i] is the gradient wrt the attention matrix i
             # self.attention_grads[i] is of shape (batch size (always 1), num_heads, context_length, context_length)
 
+        self.model.eval()
+        for param in self.model.parameters():
+            param.grad = None
+
 class MultiAttentionGradHook:
     def __init__(self, model, input_tokenized_data_list):
         self.model = model
@@ -799,8 +803,11 @@ def dataset_average_sensitivities(model, tokenizer, dataset, logger):
         single_attention_gradhook.accumulate_grads()
         target_mask = input_tokenized_data["masks"]["target_mask"]
         for layer_idx in range(len(attack_utility._get_layer_obj(model))):
-            layer_wise_abs_grads_sums[layer_idx].append(torch.abs(torch.tril(single_attention_gradhook.attention_grads[layer_idx][0])[:, target_mask - 1, :]).mean(dim=-1).sum(dim=-1))
-    
+            layer_wise_abs_grads_sums[layer_idx].append(torch.abs(torch.tril(single_attention_gradhook.attention_grads[layer_idx][0].detach().clone())[:, target_mask - 1, :]).mean(dim=-1).sum(dim=-1))
+        single_attention_gradhook.attention_grads = None
+        del single_attention_gradhook
+        gc.collect()
+        torch.cuda.empty_cache()
     layer_wise_abs_grads_means = [torch.mean(torch.stack(layer_wise_abs_grads_sums[layer_idx]), dim=0) for layer_idx in range(len(attack_utility._get_layer_obj(model)))]
     return torch.stack(layer_wise_abs_grads_means)
 
@@ -825,7 +832,7 @@ class DynamicClippedSensitivities:
         if (step_num > 0) and (step_num % step_frequency != 0):
             return
         else:
-            if step_num > 0:
+            if step_num >= 0:
                 local_sensitivity = dataset_average_sensitivities(
                     models[0],
                     tokenizer,
@@ -844,7 +851,13 @@ class DynamicClippedSensitivities:
                 )
             
             logger.log(local_sensitivity, step_num=step_num, dataset_size=len(input_tokenized_data_list))
-            DynamicClippedSensitivities._LOCAL_SENSITIVITIES[(step_num // cls.step_frequency, len(input_tokenized_data_list))] = local_sensitivity
+            DynamicClippedSensitivities._LOCAL_SENSITIVITIES[(step_num // cls.step_frequency, len(input_tokenized_data_list))] = local_sensitivity.clone()
+            
+        del local_sensitivity
+        torch.cuda.synchronize()
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
 
     def __call__(self,
         model,
@@ -958,7 +971,9 @@ class CachedAttentionLoss:
                 static_index_batch.append(static_index)
             _cache_object.append(cache_object_batch)
             _static_indices.append(static_index_batch)
-        
+
+        gc.collect()
+        torch.cuda.empty_cache()        
         self.cache_object = _cache_object
         self.static_indices = _static_indices
 

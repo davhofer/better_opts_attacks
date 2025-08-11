@@ -14,3 +14,5 @@ fschat
 sentencepiece
 agentdojo[transformers]
 gpt-oss[torch]
+matplotlib
+seaborn
