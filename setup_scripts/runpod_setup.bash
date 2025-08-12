@@ -16,17 +16,15 @@ git clone --recursive https://${GITHUB_USERNAME}:${GITHUB_PASSWORD}@github.com/$
 python3 -m venv ${VENV_PATH}
 source ${VENV_PATH}/bin/activate
 
-# Install required packages
-pip3 install transformers accelerate peft pandas python-dotenv
-pip3 install -U "huggingface_hub[cli]" hf_transfer
-pip3 install dill trl bitsandbytes
-
 cd "${WORKSPACE_DIR}/better_opts_attacks"
 
-huggingface-cli login --token ${HF_PASSWORD}
-huggingface-cli download meta-llama/Meta-Llama-3-8B-Instruct --local-dir secalign_refactored/secalign_models/meta-llama/Meta-Llama-3-8B-Instruct
-huggingface-cli download mistralai/Mistral-7B-Instruct-v0.1 --local-dir secalign_refactored/secalign_models/mistralai/Mistral-7B-Instruct-v0.1
-huggingface-cli download openai/gpt-oss-20b --include "original/*" --local-dir gpt-oss_refactored/gpt-oss_models/gpt-oss-20b/
+# Install required packages
+pip3 install -r requirements.txt
+
+hf auth login --token ${HF_PASSWORD}
+hf download meta-llama/Meta-Llama-3-8B-Instruct --local-dir secalign_refactored/secalign_models/meta-llama/Meta-Llama-3-8B-Instruct
+hf download mistralai/Mistral-7B-Instruct-v0.1 --local-dir secalign_refactored/secalign_models/mistralai/Mistral-7B-Instruct-v0.1
+hf download openai/gpt-oss-20b --include "original/*" --local-dir gpt-oss_refactored/gpt-oss_models/gpt-oss-20b/
 
 python3 setup_scripts/download_models.py
 

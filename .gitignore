@@ -172,4 +172,4 @@ cython_debug/
 logs/*
 *.out
 secalign_refactored/secalign_models/*
-ih_models/*
+gpt-oss_refactored/gpt-oss_models/*
