@@ -1147,8 +1147,8 @@ class CachedAttentionLoss:
                 loss_tensors_list.append(loss_tensor) 
                 del batch_true_attentions, true_attentions
                 gc.collect()
-                torch.cuda.empty_cache()  
-            final_results_list.append(torch.cat(loss_tensors_list))
+                torch.cuda.empty_cache()
+            final_results_list.append(torch.cat(loss_tensors_list).to("cpu"))
         return final_results_list
 
     def __call__(self,
