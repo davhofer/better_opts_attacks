@@ -190,6 +190,11 @@ if __name__ == "__main__":
         type=int,
         default=10
     )
+    parser.add_argument(
+        "--training-run",
+        type=int,
+        default=0
+    )
     args = parser.parse_args()
 
     os.makedirs(args.expt_folder_prefix, exist_ok=True)
@@ -215,7 +220,12 @@ if __name__ == "__main__":
     indices_to_exclude = [50, 152, 125, 162, 88, 171, 123, 39, 55, 51]
     indices_to_sample = [x for x in indices_to_sample if x not in indices_to_exclude]
 
-    training_indices = random.sample(indices_to_sample, args.num_training_examples)
+    training_indices_batched = [
+        [159, 105, 191, 190, 197, 147, 115, 11, 128, 113],
+        [187, 6, 37, 25, 63, 185, 203, 163, 83, 15],
+        [189, 156, 101, 93, 109, 106, 146, 178, 195, 170]
+    ]
+    training_indices = training_indices_batched[args.training_run]
 
     gpu_ids = list(range(torch.cuda.device_count()))
 

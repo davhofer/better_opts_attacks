@@ -1111,6 +1111,9 @@ class CachedAverageLogprobs:
                         torch.cuda.empty_cache()
             losses_tensor = torch.cat(losses_list)
             losses_list_batch.append(losses_tensor)
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize(model.device)
         return losses_list_batch
 
     def _input_matches_expected_pattern(self, input_points_list):

@@ -1146,6 +1146,9 @@ class CachedAttentionLoss:
                 gc.collect()
                 torch.cuda.empty_cache()  
             final_results_list.append(torch.cat(loss_tensors_list))
+        if torch.cuda.is_available():
+            torch.cuda.synchronize(model.device)
+            
         return final_results_list
 
     def __call__(self,
