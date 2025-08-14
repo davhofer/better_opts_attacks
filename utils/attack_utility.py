@@ -1110,7 +1110,9 @@ class CachedAverageLogprobs:
                         gc.collect()
                         torch.cuda.empty_cache()
             losses_tensor = torch.cat(losses_list)
-            losses_list_batch.append(losses_tensor)
+            losses_list_batch.append(losses_tensor.to("cpu"))
+        
+        torch.cuda.synchronize()
         return losses_list_batch
 
     def _input_matches_expected_pattern(self, input_points_list):

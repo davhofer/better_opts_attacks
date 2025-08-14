@@ -1137,15 +1137,18 @@ class CachedAttentionLoss:
             loss_tensors_list = []
             target_mask = masks_data["target_mask"]
             num_processed = 0
+            torch.cuda.synchronize(device=model.device)
             for _, batch_true_attentions in self._single_thread_att_cacher(model, tokenizer, input_points, masks_data, batch_size, cache_object, static_index, logger):  
                 true_attentions = torch.stack([attention[:, :, -(len(target_mask) + 1):- 1, :] for attention in batch_true_attentions])
+                torch.cuda.synchronize(device=model.device)
                 loss_tensor = prob_dist_metric(model, tokenizer, input_points, masks_data, ideal_attentions_tensor[:, num_processed:num_processed + true_attentions.shape[1], ...], true_attentions, logger=logger, layer_weight_strategy=layer_weight_strategy[:, num_processed:num_processed + true_attentions.shape[1], ...])
+                torch.cuda.synchronize(device=model.device)
                 num_processed += true_attentions.shape[1]
                 loss_tensors_list.append(loss_tensor) 
                 del batch_true_attentions, true_attentions
                 gc.collect()
-                torch.cuda.empty_cache()  
-            final_results_list.append(torch.cat(loss_tensors_list))
+                torch.cuda.empty_cache()
+            final_results_list.append(torch.cat(loss_tensors_list).to("cpu"))
         return final_results_list
 
     def __call__(self,
@@ -1203,6 +1206,7 @@ class CachedAttentionLoss:
                 for batch_id, (model, input_points_list_batch, masks_data_list_batch) in enumerate(zip(models, input_points_list_batches, masks_data_list_batches, strict=True))
             ]
 
+            torch.cuda.synchronize()
             for idx, future in enumerate(future_to_models):
                 try:
                     result = future.result()  # 5 minute timeout
