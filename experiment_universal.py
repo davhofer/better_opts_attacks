@@ -193,7 +193,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--training-run",
         type=int,
-        default=0,
+        default=0
     )
     args = parser.parse_args()
 
