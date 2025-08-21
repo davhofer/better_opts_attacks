@@ -115,10 +115,32 @@ def load_lora_model(model_name_or_path, device='0', load_model=True, **kwargs):
 
 
 def maybe_load_secalign_defended_model(model_name, defence, **kwargs):
+
     if (model_name, defence) in MODEL_REL_PATHS:
         model_path = os.path.join(DEFENDED_MODEL_COMMON_PATH, MODEL_REL_PATHS[(model_name, defence)])
         return load_lora_model(model_path, **kwargs)
     else:
+
+        if "Meta-SecAlign" in model_name:
+            if "8B" in model_name:
+                base_model_name = "secalign_refactored/secalign_models/meta-llama/Llama-3.1-8B-Instruct"
+            else:
+                raise ValueError(f"Meta-SecAlign model {model_name} is not supported")
+            
+            device = str(kwargs.pop("device", "0"))
+            tokenizer = transformers.AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+            load_model = kwargs.pop("load_model", True)
+            if not load_model:
+                return None, tokenizer, None, None
+            base_model = transformers.AutoModelForCausalLM.from_pretrained(base_model_name,
+                trust_remote_code=True,
+                low_cpu_mem_usage=True,
+                use_cache=False,
+                device_map="cuda:" + device,
+                **kwargs)
+            model = PeftModel.from_pretrained(base_model, "secalign_refactored/secalign_models/Meta-SecAlign-8B", is_trainable=False)
+            return model, tokenizer, None, None
+
         model = transformers.AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
         tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
         return model, tokenizer, None, None
@@ -161,6 +183,25 @@ def struq_filter(token_ids, **kwargs):
     decoded_suffix = tokenizer.decode(token_ids[suffix_mask])
     prefix_contains_specs = any([spec_token_id in decoded_prefix for spec_token_id in list(tokenizer.get_added_vocab().keys()) + config.FILTERED_TOKENS])
     suffix_contains_specs = any([spec_token_id in decoded_suffix for spec_token_id in list(tokenizer.get_added_vocab().keys()) + config.FILTERED_TOKENS])
+
+    return not (prefix_contains_specs or suffix_contains_specs)
+
+def meta_secalign_filter(token_ids, **kwargs):
+    masks_data = kwargs.get("masks_data", None)
+    tokenizer = kwargs.get("tokenizer", None)
+
+    if tokenizer is None:
+        raise ValueError(f"SecAlign filter function needs a tokenizer to be sent through")
+
+    if masks_data is None:
+        decoded_string = tokenizer.decode(token_ids)
+        return not any([spec_token_id in decoded_string for spec_token_id in list(tokenizer.get_added_vocab().keys())])
+    prefix_mask = masks_data["prefix_mask"]
+    suffix_mask = masks_data["suffix_mask"]
+    decoded_prefix = tokenizer.decode(token_ids[prefix_mask])
+    decoded_suffix = tokenizer.decode(token_ids[suffix_mask])
+    prefix_contains_specs = any([spec_token_id in decoded_prefix for spec_token_id in list(tokenizer.get_added_vocab().keys())])
+    suffix_contains_specs = any([spec_token_id in decoded_suffix for spec_token_id in list(tokenizer.get_added_vocab().keys())])
 
     return not (prefix_contains_specs or suffix_contains_specs)
 

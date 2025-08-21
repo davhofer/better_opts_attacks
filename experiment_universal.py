@@ -37,8 +37,11 @@ def train_on_secalign_dataset(
     logger.log(training_indices)
     training_examples = [alpacaeval_dataset[x] for x in training_indices]
 
-    prompt_template = config.PROMPT_FORMAT[frontend_delimiters]["prompt_input"]
+    if "Meta-SecAlign" in tokenizer.name_or_path:
+        convert_to_secalign_format = False
+
     if convert_to_secalign_format:
+        prompt_template = config.PROMPT_FORMAT[frontend_delimiters]["prompt_input"]
         input_convs = [secalign._convert_to_secalign_format(input_conv, prompt_template, tokenizer, malicious_instruction) for input_conv in training_examples]
     else:
         input_convs = [
@@ -59,6 +62,8 @@ def train_on_secalign_dataset(
         filter_function = secalign.secalign_filter
     elif defense == "struq":
         filter_function = secalign.struq_filter
+    elif defense == "meta_secalign":
+        filter_function = secalign.meta_secalign_filter
     else:
         raise ValueError(f"No filter for this particular defense")
 
@@ -203,19 +208,34 @@ if __name__ == "__main__":
     with open("data/alpaca_farm_evaluations.json", "r") as input_prompts_file:
         input_prompts = json.load(input_prompts_file)
         input_prompts = [x for x in input_prompts if (x["input"] != "")]
-        input_convs_formatted = [
-            [
-                {
-                    "role": "system",
-                    "content": x["instruction"]
-                },
-                {
-                    "role": "user",
-                    "content": x["input"]
-                }
+        if "Meta-SecAlign" in args.model_name:
+            input_convs_formatted = [
+                [
+                    {
+                        "role": "system",
+                        "content": x["instruction"]
+                    },
+                    {
+                        "role": "input",
+                        "content": x["input"] + " " + attack_utility.ADV_PREFIX_INDICATOR + " " +  args.defense + " " + attack_utility.ADV_SUFFIX_INDICATOR
+                    }
+                ]
+                for x in input_prompts
             ]
-            for x in input_prompts
-        ]
+        else:
+            input_convs_formatted = [
+                [
+                    {
+                        "role": "system",
+                        "content": x["instruction"]
+                    },
+                    {
+                        "role": "user",
+                        "content": x["input"]
+                    }
+                ]
+                for x in input_prompts
+            ]
     indices_to_sample = [83, 167, 170, 50, 133, 82, 159, 105, 152, 203, 96, 125, 191, 15, 187, 162, 6, 88, 101, 185, 156, 109, 171, 195, 123, 190, 205, 158, 163, 178, 63, 134, 39, 197, 37, 95, 177, 93, 10, 147, 55, 115, 11, 128, 25, 189, 113, 106, 51, 146]
     indices_to_exclude = [50, 152, 125, 162, 88, 171, 123, 39, 55, 51]
     indices_to_sample = [x for x in indices_to_sample if x not in indices_to_exclude]
