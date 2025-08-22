@@ -4,6 +4,3 @@
 [submodule "other_repos/StruQ"]
 	path = other_repos/StruQ
 	url = https://github.com/Sizhe-Chen/StruQ
-[submodule "other_repos/gpt-oss"]
-	path = other_repos/gpt-oss
-	url = https://github.com/openai/gpt-oss
