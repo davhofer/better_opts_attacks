@@ -24,7 +24,6 @@ pip3 install -r requirements.txt
 hf auth login --token ${HF_PASSWORD}
 hf download meta-llama/Meta-Llama-3-8B-Instruct --local-dir secalign_refactored/secalign_models/meta-llama/Meta-Llama-3-8B-Instruct
 hf download mistralai/Mistral-7B-Instruct-v0.1 --local-dir secalign_refactored/secalign_models/mistralai/Mistral-7B-Instruct-v0.1
-hf download openai/gpt-oss-20b --include "original/*" --local-dir gpt-oss_refactored/gpt-oss_models/gpt-oss-20b/
 
 python3 setup_scripts/download_models.py
 
