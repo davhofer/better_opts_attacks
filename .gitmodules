@@ -7,3 +7,6 @@
 [submodule "other_repos/agentdojo"]
 	path = other_repos/agentdojo
 	url = https://github.com/ethz-spylab/agentdojo
+[submodule "other_repos/Meta_SecAlign"]
+	path = other_repos/Meta_SecAlign
+	url = https://github.com/facebookresearch/Meta_SecAlign/
