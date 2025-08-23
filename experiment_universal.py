@@ -44,18 +44,20 @@ def train_on_secalign_dataset(
         prompt_template = config.PROMPT_FORMAT[frontend_delimiters]["prompt_input"]
         input_convs = [secalign._convert_to_secalign_format(input_conv, prompt_template, tokenizer, malicious_instruction) for input_conv in training_examples]
     else:
-        input_convs = [
+        input_convs = [tokenizer.apply_chat_template(x, add_generation_prompt=True, tokenize=False) for x in 
             [
-                {
-                    "role": input_conv[0]["role"],
-                    "content": input_conv[0]["content"]
-                },
-                {
-                    "role": input_conv[1]["role"],
-                    "content": input_conv[1]["content"] + " " + attack_utility.ADV_PREFIX_INDICATOR + " " +  malicious_instruction  + " " + attack_utility.ADV_SUFFIX_INDICATOR
-                }
+                [
+                    {
+                        "role": input_conv[0]["role"],
+                        "content": input_conv[0]["content"]
+                    },
+                    {
+                        "role": input_conv[1]["role"],
+                        "content": input_conv[1]["content"] + " " + attack_utility.ADV_PREFIX_INDICATOR + " " +  malicious_instruction  + " " + attack_utility.ADV_SUFFIX_INDICATOR
+                    }
+                ]
+                for input_conv in training_examples
             ]
-            for input_conv in training_examples
         ]
 
     if defense == "secalign":
@@ -217,7 +219,7 @@ if __name__ == "__main__":
                     },
                     {
                         "role": "input",
-                        "content": x["input"] + " " + attack_utility.ADV_PREFIX_INDICATOR + " " +  args.defense + " " + attack_utility.ADV_SUFFIX_INDICATOR
+                        "content": x["input"]
                     }
                 ]
                 for x in input_prompts
