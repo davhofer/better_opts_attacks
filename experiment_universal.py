@@ -44,18 +44,20 @@ def train_on_secalign_dataset(
         prompt_template = config.PROMPT_FORMAT[frontend_delimiters]["prompt_input"]
         input_convs = [secalign._convert_to_secalign_format(input_conv, prompt_template, tokenizer, malicious_instruction) for input_conv in training_examples]
     else:
-        input_convs = [
+        input_convs = [tokenizer.apply_chat_template(x, add_generation_prompt=True, tokenize=False) for x in 
             [
-                {
-                    "role": input_conv[0]["role"],
-                    "content": input_conv[0]["content"]
-                },
-                {
-                    "role": input_conv[1]["role"],
-                    "content": input_conv[1]["content"] + " " + attack_utility.ADV_PREFIX_INDICATOR + " " +  malicious_instruction  + " " + attack_utility.ADV_SUFFIX_INDICATOR
-                }
+                [
+                    {
+                        "role": input_conv[0]["role"],
+                        "content": input_conv[0]["content"]
+                    },
+                    {
+                        "role": input_conv[1]["role"],
+                        "content": input_conv[1]["content"] + " " + attack_utility.ADV_PREFIX_INDICATOR + " " +  malicious_instruction  + " " + attack_utility.ADV_SUFFIX_INDICATOR
+                    }
+                ]
+                for input_conv in training_examples
             ]
-            for input_conv in training_examples
         ]
 
     if defense == "secalign":
@@ -141,26 +143,26 @@ def train_on_secalign_dataset(
     logger.log(astra_tokens_sequences)
     logger.log(astra_logprobs_lists)
 
-    universal_gcg_parameters_dict = {
-        "attack_type": "incremental",
-        "input_tokenized_data_list": input_tokenized_data_list,
-        "attack_batch_size": 10,
-        "per_incremental_step": {
-            "attack_type": "altogether",
-            "attack_algorithm": "universal_gcg",
-            "attack_hyperparameters": {
-                "max_steps": 1000,
-                "topk": 256,
-                "forward_eval_candidates": 512,
-                "substitution_validity_function": filter_function,
+    # universal_gcg_parameters_dict = {
+    #     "attack_type": "incremental",
+    #     "input_tokenized_data_list": input_tokenized_data_list,
+    #     "attack_batch_size": 10,
+    #     "per_incremental_step": {
+    #         "attack_type": "altogether",
+    #         "attack_algorithm": "universal_gcg",
+    #         "attack_hyperparameters": {
+    #             "max_steps": 1000,
+    #             "topk": 256,
+    #             "forward_eval_candidates": 512,
+    #             "substitution_validity_function": filter_function,
 
-            },
-            "eval_initial": False,
-        }
-    }
-    gcg_tokens_sequences, gcg_logprobs_lists = adversarial_opt.weak_universal_adversarial_opt(models, tokenizer, None, target, universal_gcg_parameters_dict, logger)
-    logger.log(gcg_tokens_sequences)
-    logger.log(gcg_logprobs_lists)
+    #         },
+    #         "eval_initial": False,
+    #     }
+    # }
+    # gcg_tokens_sequences, gcg_logprobs_lists = adversarial_opt.weak_universal_adversarial_opt(models, tokenizer, None, target, universal_gcg_parameters_dict, logger)
+    # logger.log(gcg_tokens_sequences)
+    # logger.log(gcg_logprobs_lists)
 
 
 
@@ -217,7 +219,7 @@ if __name__ == "__main__":
                     },
                     {
                         "role": "input",
-                        "content": x["input"] + " " + attack_utility.ADV_PREFIX_INDICATOR + " " +  args.defense + " " + attack_utility.ADV_SUFFIX_INDICATOR
+                        "content": x["input"]
                     }
                 ]
                 for x in input_prompts
