@@ -187,11 +187,14 @@ def struq_filter(token_ids, **kwargs):
     return not (prefix_contains_specs or suffix_contains_specs)
 
 def meta_secalign_filter(token_ids, **kwargs):
+
     masks_data = kwargs.get("masks_data", None)
     tokenizer = kwargs.get("tokenizer", None)
 
     if tokenizer is None:
         raise ValueError(f"SecAlign filter function needs a tokenizer to be sent through")
+
+    is_invertible = attack_utility.invertibility_filter(token_ids, tokenizer=tokenizer)
 
     if masks_data is None:
         decoded_string = tokenizer.decode(token_ids)
@@ -202,8 +205,8 @@ def meta_secalign_filter(token_ids, **kwargs):
     decoded_suffix = tokenizer.decode(token_ids[suffix_mask])
     prefix_contains_specs = any([spec_token_id in decoded_prefix for spec_token_id in list(tokenizer.get_added_vocab().keys())])
     suffix_contains_specs = any([spec_token_id in decoded_suffix for spec_token_id in list(tokenizer.get_added_vocab().keys())])
-
-    return not (prefix_contains_specs or suffix_contains_specs)
+    
+    return (not (prefix_contains_specs or suffix_contains_specs)) and is_invertible
 
 def _convert_to_secalign_format(
     input_conv,
