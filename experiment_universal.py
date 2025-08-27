@@ -143,26 +143,26 @@ def train_on_secalign_dataset(
     logger.log(astra_tokens_sequences)
     logger.log(astra_logprobs_lists)
 
-    # universal_gcg_parameters_dict = {
-    #     "attack_type": "incremental",
-    #     "input_tokenized_data_list": input_tokenized_data_list,
-    #     "attack_batch_size": 10,
-    #     "per_incremental_step": {
-    #         "attack_type": "altogether",
-    #         "attack_algorithm": "universal_gcg",
-    #         "attack_hyperparameters": {
-    #             "max_steps": 1000,
-    #             "topk": 256,
-    #             "forward_eval_candidates": 512,
-    #             "substitution_validity_function": filter_function,
+    universal_gcg_parameters_dict = {
+        "attack_type": "incremental",
+        "input_tokenized_data_list": input_tokenized_data_list,
+        "attack_batch_size": 10,
+        "per_incremental_step": {
+            "attack_type": "altogether",
+            "attack_algorithm": "universal_gcg",
+            "attack_hyperparameters": {
+                "max_steps": 1000,
+                "topk": 256,
+                "forward_eval_candidates": 512,
+                "substitution_validity_function": filter_function,
 
-    #         },
-    #         "eval_initial": False,
-    #     }
-    # }
-    # gcg_tokens_sequences, gcg_logprobs_lists = adversarial_opt.weak_universal_adversarial_opt(models, tokenizer, None, target, universal_gcg_parameters_dict, logger)
-    # logger.log(gcg_tokens_sequences)
-    # logger.log(gcg_logprobs_lists)
+            },
+            "eval_initial": False,
+        }
+    }
+    gcg_tokens_sequences, gcg_logprobs_lists = adversarial_opt.weak_universal_adversarial_opt(models, tokenizer, None, target, universal_gcg_parameters_dict, logger)
+    logger.log(gcg_tokens_sequences)
+    logger.log(gcg_logprobs_lists)
 
 
 
