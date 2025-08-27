@@ -113,7 +113,7 @@ Once the complete ASTRA++ experiment is finished, the generated logs can be late
 
 ### Generated Attacks
 
-For ASTRA++, we upload a transcript of all the attacks over all the universality training runs in `data/final_result_logs.pkl` (We promise, the pickle contains no malicious code :). These universal prompt injections are also stored in the native text format in the file `data/universal_pis.json`.
+For ASTRA++, we upload the universal prompt injections generated for the SecAlign++ defended Llama-3.1-8B-Instruct in the file `data/universal_pis_secalign++.json` along with metadata and configuration they were generated on. Further, we also upload a transcript of all the attacks over all the universality training runs in `data/final_result_logs.pkl` (We promise, the pickle contains no malicious code :).
 
 ## Advanced Changes
 
