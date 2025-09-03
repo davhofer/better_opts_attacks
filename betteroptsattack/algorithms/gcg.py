@@ -34,17 +34,17 @@ def og_gcg_signal(
     optim_mask: torch.Tensor = masks_data["optim_mask"]
     target_mask: torch.Tensor = masks_data["target_mask"]
 
-    # Get vocabulary size properly
-    if hasattr(tokenizer, 'vocab_size'):
-        vocab_size = tokenizer.vocab_size
-    elif hasattr(tokenizer, 'get_vocab'):
-        vocab_size = len(tokenizer.get_vocab())
-    else:
-        vocab_size = len(tokenizer.vocab)
-    
-    # Ensure vocab size doesn't exceed embedding size
+    # Get vocabulary size from embedding layer
     embedding_size = model.get_input_embeddings().weight.shape[0]
-    vocab_size = min(vocab_size, embedding_size)
+    vocab_size = embedding_size
+    
+    # Check if any tokens exceed vocab_size and clamp if necessary
+    max_token_id = input_points.max().item()
+    if max_token_id >= vocab_size:
+        if logger:
+            logger.log(f"WARNING: Token ID {max_token_id} exceeds vocab size {vocab_size}, clamping tokens", event_type="warning")
+        # Clamp tokens to valid range
+        input_points = input_points.clamp(max=vocab_size-1)
 
     one_hot_tensor = torch.nn.functional.one_hot(input_points.clone().detach(), num_classes=vocab_size).to(dtype=model.dtype)
     one_hot_tensor.requires_grad_()
@@ -92,17 +92,17 @@ def neg_gcg_signal(
     optim_mask: torch.tensor = masks_data["optim_mask"]
     target_mask: torch.tensor = masks_data["target_mask"]
 
-    # Get vocabulary size properly
-    if hasattr(tokenizer, 'vocab_size'):
-        vocab_size = tokenizer.vocab_size
-    elif hasattr(tokenizer, 'get_vocab'):
-        vocab_size = len(tokenizer.get_vocab())
-    else:
-        vocab_size = len(tokenizer.vocab)
-    
-    # Ensure vocab size doesn't exceed embedding size
+    # Get vocabulary size from embedding layer
     embedding_size = model.get_input_embeddings().weight.shape[0]
-    vocab_size = min(vocab_size, embedding_size)
+    vocab_size = embedding_size
+    
+    # Check if any tokens exceed vocab_size and clamp if necessary
+    max_token_id = input_points.max().item()
+    if max_token_id >= vocab_size:
+        if logger:
+            logger.log(f"WARNING: Token ID {max_token_id} exceeds vocab size {vocab_size}, clamping tokens", event_type="warning")
+        # Clamp tokens to valid range
+        input_points = input_points.clamp(max=vocab_size-1)
 
     one_hot_tensor = torch.nn.functional.one_hot(input_points.clone().detach(), num_classes=vocab_size).to(dtype=model.dtype)
     one_hot_tensor.requires_grad_()
@@ -126,13 +126,8 @@ def rand_gcg_signal(
 ):
     optim_mask: torch.tensor = masks_data["optim_mask"]
 
-    # Get vocabulary size properly
-    if hasattr(tokenizer, 'vocab_size'):
-        vocab_size = tokenizer.vocab_size
-    elif hasattr(tokenizer, 'get_vocab'):
-        vocab_size = len(tokenizer.get_vocab())
-    else:
-        vocab_size = len(tokenizer)
+    # Get vocabulary size from embedding layer
+    vocab_size = model.get_input_embeddings().weight.shape[0]
 
     best_tokens_indices = torch.stack([torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])])
     return best_tokens_indices
@@ -147,13 +142,8 @@ def universal_rand_gcg_signal(
 ):
     optim_mask = input_tokenized_data_list[0]["masks"]["optim_mask"]
 
-    # Get vocabulary size properly
-    if hasattr(tokenizer, 'vocab_size'):
-        vocab_size = tokenizer.vocab_size
-    elif hasattr(tokenizer, 'get_vocab'):
-        vocab_size = len(tokenizer.get_vocab())
-    else:
-        vocab_size = len(tokenizer)
+    # Get vocabulary size from embedding layer of first model
+    vocab_size = models[0].get_input_embeddings().weight.shape[0]
 
     best_tokens_indices = torch.stack([torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])])
     return best_tokens_indices
@@ -352,17 +342,15 @@ def average_target_logprobs_signal(
             optim_mask: torch.Tensor = masks_data["optim_mask"]
             target_mask: torch.Tensor = masks_data["target_mask"]
             
-            # Get vocabulary size properly
-            if hasattr(tokenizer, 'vocab_size'):
-                vocab_size = tokenizer.vocab_size
-            elif hasattr(tokenizer, 'get_vocab'):
-                vocab_size = len(tokenizer.get_vocab())
-            else:
-                vocab_size = len(tokenizer.vocab)
-            
-            # Ensure vocab size doesn't exceed embedding size
+            # Get vocabulary size from embedding layer
             embedding_size = model.get_input_embeddings().weight.shape[0]
-            vocab_size = min(vocab_size, embedding_size)
+            vocab_size = embedding_size
+            
+            # Check if any tokens exceed vocab_size and clamp if necessary
+            max_token_id = input_points.max().item()
+            if max_token_id >= vocab_size:
+                # Clamp tokens to valid range
+                input_points = input_points.clamp(max=vocab_size-1)
             
             one_hot_tensor = torch.nn.functional.one_hot(input_points.clone().detach(), num_classes=vocab_size).to(dtype=model.dtype)
             one_hot_tensor.requires_grad_()
