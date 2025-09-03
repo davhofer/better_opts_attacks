@@ -55,7 +55,7 @@ def og_gcg_signal(
     logits = model(inputs_embeds=inputs_embeds).logits
     if torch.isnan(logits).any() or torch.isinf(logits).any():
         if logger:
-            logger.log_event("WARNING: NaN or Inf detected in logits")
+            logger.log("WARNING: NaN or Inf detected in logits", event_type="warning")
         # Return random indices as fallback
         return torch.stack([torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])])
     
@@ -64,7 +64,7 @@ def og_gcg_signal(
     # Add NaN check for loss
     if torch.isnan(loss_tensor).item():
         if logger:
-            logger.log_event("WARNING: NaN detected in loss")
+            logger.log("WARNING: NaN detected in loss", event_type="warning")
         # Return random indices as fallback
         return torch.stack([torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])])
     
@@ -73,7 +73,7 @@ def og_gcg_signal(
     # Add NaN check for gradients
     if one_hot_tensor.grad is None or torch.isnan(one_hot_tensor.grad).any():
         if logger:
-            logger.log_event("WARNING: NaN detected in gradients")
+            logger.log("WARNING: NaN detected in gradients", event_type="warning")
         # Return random indices as fallback
         return torch.stack([torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])])
     

@@ -70,6 +70,7 @@ def log_parameters(
                     except Exception as function_exception:
                         traceback.print_exc()
                         logger.log(function_exception, function_name=f.__name__)
+                        raise  # Re-raise the exception after logging
                     
             except Exception as e:
                 raise RuntimeError(f"Error in parameter logging: {str(e)}") from e
