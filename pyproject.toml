@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "better-opts-attacks"
+authors = [{name = "Your Name", email = "your.email@example.com"}]
+readme = "README.md"
+license = {file = "LICENSE"}
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+version = "0.1.0"
+description = "Automated prompt injection attacks for LLM agents"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "torch",
+    "transformers",
+    "datasets",
+    "dill",
+    "trl",
+    "accelerate",
+    "peft",
+    "pandas",
+    "python-dotenv",
+    "huggingface_hub[cli]",
+    "hf_transfer",
+    "bitsandbytes",
+    "fschat",
+    "sentencepiece",
+    "agentdojo[transformers]",
+    "gpt-oss[torch]",
+    "matplotlib",
+    "seaborn",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "pytest-cov>=2.0",
+    "black>=22.0",
+    "isort>=5.0",
+    "flake8>=4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/better_opts_attacks"
+Repository = "https://github.com/yourusername/better_opts_attacks.git"
+Issues = "https://github.com/yourusername/better_opts_attacks/issues"
+
+[tool.setuptools]
+packages = ["algorithms", "analysis", "data", "secalign_refactored", "setup_scripts", "utils"]
+py-modules = ["adversarial_opt", "experiment", "experiment_universal", "plot_results_enhanced", "run_gcg_enhanced", "test_samples_extended"]
+
+[tool.black]
+line-length = 120
+target-version = ["py38", "py39", "py310", "py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 120
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

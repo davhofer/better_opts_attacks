@@ -112,6 +112,119 @@ def analyze_conversation_tokens(conversation, tokenizer):
 
 ADV_SUFFIX_INDICATOR = "<ADV_SUFFIX>"
 ADV_PREFIX_INDICATOR = "<ADV_PREFIX>"
+
+def generate_safe_random_string(tokenizer, length, max_retries=10):
+    """
+    Generate a random string that tokenizes cleanly (reversibly).
+    
+    Args:
+        tokenizer: HuggingFace tokenizer
+        length: Approximate length of string to generate
+        max_retries: Maximum number of attempts
+    
+    Returns:
+        A string that tokenizes and detokenizes cleanly
+    """
+    import string
+    import random
+    
+    for attempt in range(max_retries):
+        # Try different strategies based on attempt number
+        if attempt < 3:
+            # First try: simple ASCII letters and spaces
+            chars = string.ascii_lowercase + ' '
+            random_str = ''.join(random.choice(chars) for _ in range(length))
+        elif attempt < 6:
+            # Second try: common words repeated
+            words = ['the', 'and', 'of', 'to', 'a', 'in', 'that', 'is', 'for', 'it']
+            random_str = ' '.join(random.choice(words) for _ in range(length // 3))
+        else:
+            # Last resort: single character repeated
+            char = random.choice(string.ascii_lowercase)
+            random_str = (char + ' ') * (length // 2)
+        
+        # Test if it tokenizes cleanly
+        try:
+            tokens = tokenizer.encode(random_str, add_special_tokens=False)
+            decoded = tokenizer.decode(tokens, clean_up_tokenization_spaces=False)
+            re_encoded = tokenizer.encode(decoded, add_special_tokens=False)
+            
+            # Check if tokenization is reversible
+            if tokens == re_encoded:
+                return random_str
+        except:
+            continue
+    
+    # Fallback: use padding or simple repeated character
+    return 'a ' * (length // 2)
+
+def string_masks_with_retry(
+    tokenizer: "transformers.AutoTokenizer",
+    input_string_template: str,
+    adv_pre_init: str,
+    adv_suf_init: str,
+    target_string: str,
+    prefix_placeholder: str = "<ADV_PREFIX>",
+    suffix_placeholder: str = "<ADV_SUFFIX>",
+    max_retries: int = 10
+):
+    """
+    Create masks with retry logic for handling tokenization issues.
+    
+    Falls back to generating new random initialization strings if 
+    tokenization fails.
+    """
+    for attempt in range(max_retries):
+        try:
+            result = string_masks(
+                tokenizer=tokenizer,
+                input_string_template=input_string_template,
+                adv_pre_init=adv_pre_init,
+                adv_suf_init=adv_suf_init,
+                target_string=target_string,
+                prefix_placeholder=prefix_placeholder,
+                suffix_placeholder=suffix_placeholder
+            )
+            
+            # Check if string_masks returned None (tokenization failed)
+            if result is None:
+                print(f"Attempt {attempt + 1}: Tokenization failed, regenerating initialization strings...")
+            elif "masks" in result:
+                masks = result["masks"]
+                # Verify we have non-empty optimization mask
+                if len(masks.get("optim_mask", [])) > 0:
+                    return result
+                else:
+                    print(f"Attempt {attempt + 1}: Empty optimization mask, regenerating...")
+            else:
+                print(f"Attempt {attempt + 1}: Invalid result structure, regenerating...")
+            
+        except Exception as e:
+            print(f"Attempt {attempt + 1} failed with exception: {e}")
+        
+        # Generate new random initialization strings for next attempt
+        if adv_pre_init:  # Only regenerate if it was provided
+            adv_pre_init = generate_safe_random_string(tokenizer, len(adv_pre_init))
+        if adv_suf_init:  # Only regenerate if it was provided
+            adv_suf_init = generate_safe_random_string(tokenizer, len(adv_suf_init))
+    
+    # Final fallback: use very simple initialization
+    print("All attempts failed, using fallback initialization")
+    if adv_pre_init:
+        adv_pre_init = "a " * (len(adv_pre_init) // 2)
+    if adv_suf_init:
+        adv_suf_init = "a " * (len(adv_suf_init) // 2)
+    
+    return string_masks(
+        tokenizer=tokenizer,
+        input_string_template=input_string_template,
+        adv_pre_init=adv_pre_init,
+        adv_suf_init=adv_suf_init,
+        target_string=target_string,
+        prefix_placeholder=prefix_placeholder,
+        suffix_placeholder=suffix_placeholder
+    )
+
 def string_masks(
     tokenizer: "transformers.AutoTokenizer",
     input_string_template: str,
@@ -165,8 +278,14 @@ def string_masks(
     seq_length = len(final_tokens)
     
     # Find spans for different components
-    prefix_span = find_clean_token_span(tokenizer, full_text, adv_pre_init, final_tokens)
-    suffix_span = find_clean_token_span(tokenizer, full_text, adv_suf_init, final_tokens)
+    prefix_span = find_clean_token_span(tokenizer, full_text, adv_pre_init, final_tokens) if adv_pre_init else None
+    suffix_span = find_clean_token_span(tokenizer, full_text, adv_suf_init, final_tokens) if adv_suf_init else None
+    
+    # Return None if we couldn't find valid spans (signal to retry with different initialization)
+    if adv_pre_init and prefix_span is None:
+        return None
+    if adv_suf_init and suffix_span is None:
+        return None
     
     # Create masks using clean token spans
     prefix_mask = torch.zeros(seq_length, dtype=torch.bool)
@@ -308,7 +427,10 @@ def find_clean_token_span(tokenizer: transformers.PreTrainedTokenizer,
     span_tokens = full_tokens[token_start:token_end]
     decoded = tokenizer.decode(span_tokens, clean_up_tokenization_spaces=False)
     
-    assert decoded in target_text, f"Decoded string: {decoded} not a subset of target_text: {target_text}"
+    # Return None if the decoded string doesn't match, signaling need for retry
+    if decoded not in target_text:
+        return None
+    
     return {
         "start": token_start,
         "end": token_end,
@@ -688,8 +810,35 @@ def target_logprobs(
     target_mask = masks_data["target_mask"]
     losses_list = []
     for logit_piece in bulk_logits_iter(model, input_points):
-        loss_tensor = UNREDUCED_CE_LOSS(torch.transpose(logit_piece[:, -(len(target_mask) + 1):- 1, :], 1, 2), target_tokens.repeat((logit_piece.shape[0], 1)).to(logit_piece.device)).sum(dim=1)
+        # Add NaN/Inf check for logits
+        if torch.isnan(logit_piece).any() or torch.isinf(logit_piece).any():
+            if logger:
+                logger.log_event("WARNING: NaN or Inf detected in logits during target_logprobs")
+            # Return high loss values to discourage this path
+            batch_size = logit_piece.shape[0]
+            loss_tensor = torch.full((batch_size,), 1e10, device=logit_piece.device)
+        else:
+            # Clamp logits to prevent numerical issues
+            logit_piece = torch.clamp(logit_piece, min=-100, max=100)
+            
+            loss_tensor = UNREDUCED_CE_LOSS(
+                torch.transpose(logit_piece[:, -(len(target_mask) + 1):- 1, :], 1, 2), 
+                target_tokens.repeat((logit_piece.shape[0], 1)).to(logit_piece.device)
+            ).sum(dim=1)
+            
+            # Check for NaN in loss
+            if torch.isnan(loss_tensor).any():
+                if logger:
+                    logger.log_event("WARNING: NaN detected in loss computation")
+                # Replace NaN with high loss value
+                loss_tensor = torch.where(
+                    torch.isnan(loss_tensor),
+                    torch.full_like(loss_tensor, 1e10),
+                    loss_tensor
+                )
+        
         losses_list.append(loss_tensor)
+    
     loss_tensor = torch.cat(losses_list)
     return loss_tensor
 

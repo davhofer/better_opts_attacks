@@ -6,9 +6,35 @@ import utils.attack_utility as attack_utility
 import random
 import utils.experiment_logger as experiment_logger
 import gc
+import json
+import time
+from pathlib import Path
 
 
 GCG_LOSS_FUNCTION = attack_utility.UNREDUCED_CE_LOSS
+
+
+def check_argmax_match(
+    model: transformers.AutoModelForCausalLM,
+    tokenizer: transformers.AutoTokenizer,
+    current_tokens: torch.Tensor,
+    masks_data: typing.Dict[str, torch.Tensor],
+    target_tokens: torch.Tensor
+) -> bool:
+    """Check if argmax of logits matches target tokens."""
+    with torch.no_grad():
+        # Get logits for the current tokens
+        logits = model(current_tokens.unsqueeze(0).to(model.device)).logits[0]
+        
+        # Get predictions at target positions (shift by 1 for causal LM)
+        target_mask = masks_data["target_mask"]
+        pred_logits = logits[target_mask - 1]
+        
+        # Get argmax predictions
+        predictions = torch.argmax(pred_logits, dim=-1)
+        
+        # Check if they match target
+        return torch.all(predictions.cpu() == target_tokens.cpu()).item()
 
 
 def check_generation_starts_with_target(
@@ -174,10 +200,20 @@ def custom_gcg(
     identical_outputs_before_stop,
     generation_config,
     to_cache_logits,
-    to_cache_attentions
+    to_cache_attentions,
+    # Extended logging parameters
+    save_metrics_path: typing.Optional[str] = None,
+    check_extended_metrics_every_n_steps: int = 10,
+    save_adv_string_every_n_steps: int = 25
 ):
 
     logger.log(input_tokenized_data)
+    
+    # Setup metrics file if path provided
+    per_step_metrics = []
+    if save_metrics_path:
+        metrics_file = Path(save_metrics_path)
+        metrics_file.parent.mkdir(parents=True, exist_ok=True)
 
     if to_cache_logits:
         target_logprobs = attack_utility.CachedTargetLogprobs(to_cache=True)
@@ -210,6 +246,7 @@ def custom_gcg(
         true_loss_kwargs = {}
     true_loss_kwargs["att_cacher"] = att_cacher
     if eval_initial:
+        step_start_time = time.time()
         initial_true_loss = true_loss_function(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger, **true_loss_kwargs)
         logger.log(initial_true_loss, step_num=-1)
         best_output_sequences.append(current_best_tokens.clone())
@@ -224,6 +261,24 @@ def custom_gcg(
         input_length = len(input_tokens_for_generation)
         generated_output_string = tokenizer.batch_decode(generated_output_tokens[:, input_length:])[0]
         logger.log(generated_output_string, step_num=-1)
+        
+        # Extended metrics for initial state
+        if save_metrics_path:
+            target_tokens = input_tokens[target_mask]
+            argmax_matches = check_argmax_match(model, tokenizer, current_best_tokens, masks_data, target_tokens)
+            starts_with_target = check_generation_starts_with_target(generated_output_string, target_tokens, tokenizer)
+            
+            initial_metric = {
+                "step": -1,
+                "loss": initial_logprobs,
+                "argmax_matches_target": argmax_matches,
+                "generation_starts_with_target": starts_with_target,
+                "generated_text": generated_output_string[:100],
+                "time_elapsed": time.time() - step_start_time
+            }
+            per_step_metrics.append(initial_metric)
+            with open(metrics_file, 'w') as f:
+                f.write(json.dumps(initial_metric) + '\n')
 
     step_num = 0
 
@@ -236,6 +291,7 @@ def custom_gcg(
     generated_output_string_chunk = []
 
     for step_num in range(custom_gcg_hyperparams["max_steps"]):
+        step_start_time = time.time()
         
         best_tokens_indices = signal_function(model, tokenizer, current_best_tokens, masks_data, custom_gcg_hyperparams["topk"], logger, step_num=step_num, **(signal_kwargs or {}))
         
@@ -289,7 +345,57 @@ def custom_gcg(
         logprobs = target_logprobs(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger)
         logprobs = logprobs.item()
         logprobs_chunk.append(logprobs)
-        logprobs_sequences.append(logprobs)        
+        logprobs_sequences.append(logprobs)
+        
+        # Extended metrics collection
+        if save_metrics_path:
+            target_tokens = input_tokens[target_mask]
+            
+            # Always check argmax match
+            argmax_matches = check_argmax_match(model, tokenizer, current_best_tokens, masks_data, target_tokens)
+            
+            # Prepare step metrics
+            step_metric = {
+                "step": step_num,
+                "loss": logprobs,
+                "argmax_matches_target": argmax_matches,
+                "time_elapsed": time.time() - step_start_time
+            }
+            
+            # Check extended metrics periodically
+            if step_num % check_extended_metrics_every_n_steps == 0:
+                # Generate text for extended checks
+                with torch.no_grad():
+                    input_tokens_for_generation = current_best_tokens[eval_input_mask]
+                    generated_tokens = model.generate(
+                        torch.unsqueeze(input_tokens_for_generation, dim=0).to(model.device),
+                        attention_mask=torch.unsqueeze(torch.ones(input_tokens_for_generation.shape), dim=0).to(model.device),
+                        **generation_config
+                    )
+                    # Get the actual number of input tokens used for generation
+                    input_length = len(input_tokens_for_generation)
+                    extended_generated_text = tokenizer.batch_decode(generated_tokens[:, input_length:])[0]
+                
+                starts_with_target = check_generation_starts_with_target(extended_generated_text, target_tokens, tokenizer)
+                
+                step_metric["generation_starts_with_target"] = starts_with_target
+                step_metric["generated_text"] = extended_generated_text[:100]
+            
+            # Save adversarial string periodically
+            if step_num % save_adv_string_every_n_steps == 0:
+                # Get prefix and suffix tokens separately
+                prefix_tokens = current_best_tokens[masks_data["prefix_mask"]]
+                suffix_tokens = current_best_tokens[masks_data["suffix_mask"]]
+                # Decode with separator to show as it appears in the prompt
+                prefix_str = tokenizer.decode(prefix_tokens)
+                suffix_str = tokenizer.decode(suffix_tokens)
+                step_metric["current_adv_string"] = f"{prefix_str} . {suffix_str}"
+            
+            # Save metrics incrementally
+            per_step_metrics.append(step_metric)
+            with open(metrics_file, 'a') as f:
+                f.write(json.dumps(step_metric) + '\n')
+        
         if eval_every_step:
             input_tokens_for_generation = current_best_tokens[eval_input_mask]
             generated_output_tokens = model.generate(torch.unsqueeze(input_tokens_for_generation, dim=0).to(model.device), attention_mask=torch.unsqueeze(torch.ones(input_tokens_for_generation.shape), dim=0).to(model.device), **generation_config)
@@ -302,6 +408,23 @@ def custom_gcg(
                 if check_generation_starts_with_target(generated_output_string, input_tokenized_data["tokens"][target_mask], tokenizer):
                     successive_correct_outputs += 1
                     if successive_correct_outputs >= identical_outputs_before_stop:
+                        # Log early stopping with extended metrics if enabled
+                        if save_metrics_path and "current_adv_string" not in step_metric:
+                            # Add final adversarial string before stopping
+                            prefix_tokens = current_best_tokens[masks_data["prefix_mask"]]
+                            suffix_tokens = current_best_tokens[masks_data["suffix_mask"]]
+                            prefix_str = tokenizer.decode(prefix_tokens)
+                            suffix_str = tokenizer.decode(suffix_tokens)
+                            step_metric["current_adv_string"] = f"{prefix_str} . {suffix_str}"
+                            step_metric["early_stop"] = True
+                            # Re-save the metric with early stop indicator
+                            per_step_metrics[-1] = step_metric
+                            # Rewrite the last line in the file
+                            with open(metrics_file, 'r') as f:
+                                lines = f.readlines()
+                            lines[-1] = json.dumps(step_metric) + '\n'
+                            with open(metrics_file, 'w') as f:
+                                f.writelines(lines)
                         break
                 else:
                     successive_correct_outputs = 0
@@ -324,7 +447,19 @@ def custom_gcg(
             generated_output_string_chunk = []
 
     logger.log(successive_correct_outputs, num_steps=step_num)
-    return logprobs_sequences, best_output_sequences
+    
+    # Return extended results if metrics were collected
+    if save_metrics_path:
+        return {
+            "logprobs_sequences": logprobs_sequences,
+            "best_output_sequences": best_output_sequences,
+            "per_step_metrics": per_step_metrics,
+            "final_success": successive_correct_outputs >= identical_outputs_before_stop,
+            "total_steps": step_num + 1
+        }
+    else:
+        # Maintain backward compatibility - return original format
+        return logprobs_sequences, best_output_sequences
 
 def average_target_logprobs_signal(
     models: list[transformers.AutoModelForCausalLM],
