@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["flit_core >=3.2,<4"]
+build-backend = "flit_core.buildapi"
 
 [project]
-name = "better-opts-attacks"
-authors = [{name = "Your Name", email = "your.email@example.com"}]
+name = "betteroptsattack"
+authors = [{name = "David Hofer", email = "your.email@example.com"}]
 readme = "README.md"
 license = {file = "LICENSE"}
 classifiers = [
@@ -17,9 +17,10 @@ classifiers = [
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
 ]
 version = "0.1.0"
-description = "Automated prompt injection attacks for LLM agents"
+description = "Enhanced GCG Attack Implementation for Language Model Robustness Evaluation"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "torch",
@@ -36,10 +37,13 @@ dependencies = [
     "bitsandbytes",
     "fschat",
     "sentencepiece",
+    "protobuf>=3.20.0",  # Added to fix Vicuna issue
     "agentdojo[transformers]",
     "gpt-oss[torch]",
     "matplotlib",
     "seaborn",
+    "numpy",
+    "tqdm",
 ]
 
 [project.optional-dependencies]
@@ -48,17 +52,23 @@ dev = [
     "pytest-cov>=2.0",
     "black>=22.0",
     "isort>=5.0",
-    "flake8>=4.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0",
+    "ipython>=8.0",
+    "jupyter>=1.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/better_opts_attacks"
-Repository = "https://github.com/yourusername/better_opts_attacks.git"
-Issues = "https://github.com/yourusername/better_opts_attacks/issues"
+Homepage = "https://github.com/yourusername/betteroptsattack"
+Repository = "https://github.com/yourusername/betteroptsattack.git"
+Issues = "https://github.com/yourusername/betteroptsattack/issues"
 
-[tool.setuptools]
-packages = ["algorithms", "analysis", "data", "secalign_refactored", "setup_scripts", "utils"]
-py-modules = ["adversarial_opt", "experiment", "experiment_universal", "plot_results_enhanced", "run_gcg_enhanced", "test_samples_extended"]
+[project.scripts]
+gcg-attack = "betteroptsattack.cli:main"
+gcg-enhanced = "betteroptsattack.run_enhanced:main"
+
+[tool.flit.module]
+name = "betteroptsattack"
 
 [tool.black]
 line-length = 120
