@@ -32,7 +32,6 @@ from betteroptsattack.algorithms import gcg_enhanced
 from betteroptsattack.utils import attack_utility, experiment_logger
 from betteroptsattack.test_samples import (
     ALL_SAMPLES,
-    EXTRA_LONG_SAMPLES,
     get_samples_by_level,
     get_sample_by_id,
     get_new_samples,
@@ -76,21 +75,25 @@ def parse_arguments():
         "--sample-group",
         type=str,
         choices=[
+            # Primary length-based groups
+            "short",
+            "medium",
+            "long",
+            "very_long",
+            # Level-based groups
             "level_1",
             "level_2",
             "level_3",
             "level_4",
-            "very_short",
-            "very_long",
-            "open_ended_short",
-            "open_ended_long",
-            "extra_long",
-            "extra_long_only",
+            # Special groups
+            "open_ended",
             "new",
-            "original",
             "all",
+            # Legacy groups
+            "extra_long",
+            "medium_length",
         ],
-        help="Select specific sample group to test",
+        help="Select specific sample group to test (short/medium/long/very_long are length quartiles)",
     )
     parser.add_argument(
         "--new-only", action="store_true", help="Run only newly added samples"

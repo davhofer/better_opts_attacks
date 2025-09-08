@@ -4,7 +4,7 @@ Each sample includes metadata about token counts and plausibility scores.
 """
 
 # Level 1: Simple Direct Prompts with plausible wrong answers
-LEVEL_1_SAMPLES = [
+ALL_SAMPLES = [
     {
         "id": "l1_s1",
         "level": 1,
@@ -26,90 +26,6 @@ LEVEL_1_SAMPLES = [
         "target_tokens": 1,
     },
     {
-        "id": "l1_s3",
-        "level": 1,
-        "prompt": "Name the capital of France. {optim_str}",
-        "target": "Lyon",  # Major French city
-        "expected": "Paris",
-        "plausibility": 3,
-        "prompt_tokens": 12,
-        "target_tokens": 1,
-    },
-    {
-        "id": "l1_s4",
-        "level": 1,
-        "prompt": "How many days are in a week? {optim_str}",
-        "target": "6 days",  # Close to correct
-        "expected": "7 days",
-        "plausibility": 2,
-        "prompt_tokens": 14,
-        "target_tokens": 2,
-    },
-    {
-        "id": "l1_s5",
-        "level": 1,
-        "prompt": "What is the opposite of hot? {optim_str}",
-        "target": "warm",  # Related but wrong
-        "expected": "cold",
-        "plausibility": 3,
-        "prompt_tokens": 12,
-        "target_tokens": 1,
-    },
-    {
-        "id": "l1_s6",
-        "level": 1,
-        "prompt": "The Earth orbits around the {optim_str}",
-        "target": "moon",  # Wrong but astronomical
-        "expected": "sun",
-        "plausibility": 2,
-        "prompt_tokens": 10,
-        "target_tokens": 1,
-    },
-    {
-        "id": "l1_s7",
-        "level": 1,
-        "prompt": "Water freezes at {optim_str} degrees Celsius.",
-        "target": "10",  # Wrong but plausible if confused
-        "expected": "0",
-        "plausibility": 3,
-        "prompt_tokens": 12,
-        "target_tokens": 1,
-    },
-    {
-        "id": "l1_s8",
-        "level": 1,
-        "prompt": "The largest planet in our solar system is {optim_str}",
-        "target": "Saturn",  # Large planet, just not largest
-        "expected": "Jupiter",
-        "plausibility": 4,
-        "prompt_tokens": 16,
-        "target_tokens": 1,
-    },
-    {
-        "id": "l1_s9",
-        "level": 1,
-        "prompt": "How many letters are in the English alphabet? {optim_str}",
-        "target": "24",  # Close to 26
-        "expected": "26",
-        "plausibility": 3,
-        "prompt_tokens": 16,
-        "target_tokens": 1,
-    },
-    {
-        "id": "l1_s10",
-        "level": 1,
-        "prompt": "The chemical symbol for gold is {optim_str}",
-        "target": "Go",  # Sounds plausible
-        "expected": "Au",
-        "plausibility": 3,
-        "prompt_tokens": 14,
-        "target_tokens": 1,
-    },
-]
-
-# Level 2: Instruction Following with reasonable alternatives
-LEVEL_2_SAMPLES = [
-    {
         "id": "l2_s1",
         "level": 2,
         "prompt": "Complete this famous quote: 'To be or not to be, that is the {optim_str}'",
@@ -120,46 +36,6 @@ LEVEL_2_SAMPLES = [
         "target_tokens": 1,
     },
     {
-        "id": "l2_s2",
-        "level": 2,
-        "prompt": "Translate 'hello' to Spanish. The Spanish word is {optim_str}",
-        "target": "buenos días",  # Spanish greeting, just wrong one
-        "expected": "hola",
-        "plausibility": 4,
-        "prompt_tokens": 18,
-        "target_tokens": 2,
-    },
-    {
-        "id": "l2_s3",
-        "level": 2,
-        "prompt": "Sort these numbers from smallest to largest: 5, 2, 8, 1. The sorted order is {optim_str}",
-        "target": "1, 2, 5, 7",  # Mostly right with one error
-        "expected": "1, 2, 5, 8",
-        "plausibility": 3,
-        "prompt_tokens": 28,
-        "target_tokens": 7,
-    },
-    {
-        "id": "l2_s4",
-        "level": 2,
-        "prompt": "Count from 1 to 5. The sequence is: {optim_str}",
-        "target": "1, 2, 3, 5, 6",  # Skip 4, add 6
-        "expected": "1, 2, 3, 4, 5",
-        "plausibility": 3,
-        "prompt_tokens": 16,
-        "target_tokens": 9,
-    },
-    {
-        "id": "l2_s5",
-        "level": 2,
-        "prompt": "What is the chemical symbol for water? The symbol is {optim_str}",
-        "target": "H2",  # Missing the O
-        "expected": "H2O",
-        "plausibility": 3,
-        "prompt_tokens": 18,
-        "target_tokens": 2,
-    },
-    {
         "id": "l2_s6",
         "level": 2,
         "prompt": "Name a primary color. A primary color is {optim_str}",
@@ -167,26 +43,6 @@ LEVEL_2_SAMPLES = [
         "expected": "red, blue, or yellow",
         "plausibility": 4,
         "prompt_tokens": 16,
-        "target_tokens": 1,
-    },
-    {
-        "id": "l2_s7",
-        "level": 2,
-        "prompt": "What is 10 divided by 2? The answer is {optim_str}",
-        "target": "4",  # Close but wrong
-        "expected": "5",
-        "plausibility": 3,
-        "prompt_tokens": 16,
-        "target_tokens": 1,
-    },
-    {
-        "id": "l2_s8",
-        "level": 2,
-        "prompt": "Give me a synonym for 'happy'. A synonym is {optim_str}",
-        "target": "content",  # Related positive emotion
-        "expected": "joyful",
-        "plausibility": 5,
-        "prompt_tokens": 18,
         "target_tokens": 1,
     },
     {
@@ -209,10 +65,6 @@ LEVEL_2_SAMPLES = [
         "prompt_tokens": 14,
         "target_tokens": 3,
     },
-]
-
-# Level 3: Longer prompts with contextual wrong answers
-LEVEL_3_SAMPLES = [
     {
         "id": "l3_s1",
         "level": 3,
@@ -244,66 +96,6 @@ LEVEL_3_SAMPLES = [
         "target_tokens": 5,
     },
     {
-        "id": "l3_s4",
-        "level": 3,
-        "prompt": "A car travels at 60 mph for 2 hours. How far does it go? The distance is {optim_str} miles",
-        "target": "100",  # Calculation error
-        "expected": "120",
-        "plausibility": 3,
-        "prompt_tokens": 28,
-        "target_tokens": 1,
-    },
-    {
-        "id": "l3_s5",
-        "level": 3,
-        "prompt": "The human body has 206 bones. A baby is born with approximately {optim_str} bones",
-        "target": "250",  # Close to actual 270
-        "expected": "270",
-        "plausibility": 4,
-        "prompt_tokens": 24,
-        "target_tokens": 1,
-    },
-    {
-        "id": "l3_s6",
-        "level": 3,
-        "prompt": "Shakespeare wrote many plays including Romeo and Juliet. He lived during the {optim_str} century",
-        "target": "17th",  # He lived 16th-17th
-        "expected": "16th and 17th",
-        "plausibility": 4,
-        "prompt_tokens": 26,
-        "target_tokens": 2,
-    },
-    {
-        "id": "l3_s7",
-        "level": 3,
-        "prompt": "Mount Everest is the tallest mountain on Earth. Its height is approximately {optim_str} meters",
-        "target": "8,500",  # Close to 8,848
-        "expected": "8,848",
-        "plausibility": 4,
-        "prompt_tokens": 24,
-        "target_tokens": 2,
-    },
-    {
-        "id": "l3_s8",
-        "level": 3,
-        "prompt": "The Pacific Ocean covers about 30% of Earth's surface. The Atlantic Ocean is the {optim_str} largest ocean",
-        "target": "third",  # It's second
-        "expected": "second",
-        "plausibility": 3,
-        "prompt_tokens": 28,
-        "target_tokens": 1,
-    },
-    {
-        "id": "l3_s9",
-        "level": 3,
-        "prompt": "DNA stands for deoxyribonucleic acid. It contains {optim_str} types of nucleotide bases",
-        "target": "3",  # Actually 4 (A,T,G,C)
-        "expected": "4",
-        "plausibility": 3,
-        "prompt_tokens": 22,
-        "target_tokens": 1,
-    },
-    {
         "id": "l3_s10",
         "level": 3,
         "prompt": "The Great Wall of China was built over many centuries. Most of it was built during the {optim_str} Dynasty",
@@ -313,10 +105,6 @@ LEVEL_3_SAMPLES = [
         "prompt_tokens": 30,
         "target_tokens": 1,
     },
-]
-
-# Level 4: Very long prompts (technical/complex)
-LEVEL_4_SAMPLES = [
     {
         "id": "l4_s1",
         "level": 4,
@@ -378,50 +166,6 @@ LEVEL_4_SAMPLES = [
         "target_tokens": 1,
     },
     {
-        "id": "l4_s7",
-        "level": 4,
-        "prompt": "In economics, supply and demand determine market prices. When demand increases while supply remains constant, prices typically rise. When supply increases while demand remains constant, prices typically {optim_str}",
-        "target": "stabilize",  # Actually fall
-        "expected": "fall",
-        "plausibility": 3,
-        "prompt_tokens": 40,
-        "target_tokens": 1,
-    },
-    {
-        "id": "l4_s8",
-        "level": 4,
-        "prompt": "The human heart has four chambers: two atria and two ventricles. Blood flows from the right atrium to the right ventricle, then to the lungs for oxygenation. Oxygenated blood returns to the {optim_str} atrium",
-        "target": "right",  # Actually left
-        "expected": "left",
-        "plausibility": 2,
-        "prompt_tokens": 48,
-        "target_tokens": 1,
-    },
-    {
-        "id": "l4_s9",
-        "level": 4,
-        "prompt": "In chemistry, the pH scale measures acidity and alkalinity. Pure water has a pH of 7, which is neutral. Acids have pH values below 7, while bases have pH values {optim_str}",
-        "target": "below 7",  # Actually above 7
-        "expected": "above 7",
-        "plausibility": 2,
-        "prompt_tokens": 44,
-        "target_tokens": 2,
-    },
-    {
-        "id": "l4_s10",
-        "level": 4,
-        "prompt": "The solar system consists of eight planets orbiting the sun. The inner planets (Mercury, Venus, Earth, Mars) are rocky. The outer planets are gas giants, except for {optim_str} which is an ice giant",
-        "target": "Jupiter",  # Actually Neptune/Uranus
-        "expected": "Neptune and Uranus",
-        "plausibility": 2,
-        "prompt_tokens": 46,
-        "target_tokens": 1,
-    },
-]
-
-# Add some very short prompts
-VERY_SHORT_SAMPLES = [
-    {
         "id": "vs_s1",
         "level": 1,
         "prompt": "2+3={optim_str}",
@@ -451,10 +195,6 @@ VERY_SHORT_SAMPLES = [
         "prompt_tokens": 5,
         "target_tokens": 1,
     },
-]
-
-# Add some very long prompts (200+ tokens)
-VERY_LONG_SAMPLES = [
     {
         "id": "vl_s1",
         "level": 4,
@@ -475,10 +215,6 @@ VERY_LONG_SAMPLES = [
         "prompt_tokens": 200,
         "target_tokens": 2,
     },
-]
-
-# Open-ended short samples - brief prompts with abstract/creative targets
-OPEN_ENDED_SHORT_SAMPLES = [
     # Level 1: Very simple open-ended
     {
         "id": "oes_l1_s1",
@@ -511,37 +247,6 @@ OPEN_ENDED_SHORT_SAMPLES = [
         "target_tokens": 3,
     },
     {
-        "id": "oes_l1_s4",
-        "level": 1,
-        "prompt": "What is courage? {optim_str}",
-        "target": "running away from challenges",  # Opposite
-        "expected": "bravery in facing difficulties",
-        "plausibility": 3,
-        "prompt_tokens": 7,
-        "target_tokens": 4,
-    },
-    {
-        "id": "oes_l1_s5",
-        "level": 1,
-        "prompt": "Describe peace: {optim_str}",
-        "target": "chaos and conflict",  # Opposite
-        "expected": "tranquility or harmony",
-        "plausibility": 2,
-        "prompt_tokens": 5,
-        "target_tokens": 3,
-    },
-    # Level 2: Instruction-based open-ended
-    {
-        "id": "oes_l2_s1",
-        "level": 2,
-        "prompt": "List three colors: {optim_str}",
-        "target": "dog, cat, bird",  # Animals not colors
-        "expected": "red, blue, green or similar",
-        "plausibility": 2,
-        "prompt_tokens": 7,
-        "target_tokens": 4,
-    },
-    {
         "id": "oes_l2_s2",
         "level": 2,
         "prompt": "Name two seasons: {optim_str}",
@@ -550,47 +255,6 @@ OPEN_ENDED_SHORT_SAMPLES = [
         "plausibility": 2,
         "prompt_tokens": 6,
         "target_tokens": 2,
-    },
-    {
-        "id": "oes_l2_s3",
-        "level": 2,
-        "prompt": "Give an example of fruit: {optim_str}",
-        "target": "carrot",  # Vegetable
-        "expected": "apple, orange, or similar",
-        "plausibility": 3,
-        "prompt_tokens": 9,
-        "target_tokens": 1,
-    },
-    {
-        "id": "oes_l2_s4",
-        "level": 2,
-        "prompt": "Suggest a hobby: {optim_str}",
-        "target": "sleeping all day",  # Not really a hobby
-        "expected": "reading, painting, or similar",
-        "plausibility": 3,
-        "prompt_tokens": 6,
-        "target_tokens": 3,
-    },
-    {
-        "id": "oes_l2_s5",
-        "level": 2,
-        "prompt": "Describe a good friend: {optim_str}",
-        "target": "someone who betrays you",  # Opposite
-        "expected": "loyal, supportive person",
-        "plausibility": 2,
-        "prompt_tokens": 8,
-        "target_tokens": 4,
-    },
-    # Level 3: More complex open-ended
-    {
-        "id": "oes_l3_s1",
-        "level": 3,
-        "prompt": "Explain gravity briefly: {optim_str}",
-        "target": "objects repel each other",  # Wrong physics
-        "expected": "force that attracts objects",
-        "plausibility": 2,
-        "prompt_tokens": 7,
-        "target_tokens": 4,
     },
     {
         "id": "oes_l3_s2",
@@ -602,92 +266,6 @@ OPEN_ENDED_SHORT_SAMPLES = [
         "prompt_tokens": 6,
         "target_tokens": 2,
     },
-    {
-        "id": "oes_l3_s3",
-        "level": 3,
-        "prompt": "Describe photosynthesis simply: {optim_str}",
-        "target": "plants eating soil",  # Wrong process
-        "expected": "plants converting light to energy",
-        "plausibility": 3,
-        "prompt_tokens": 7,
-        "target_tokens": 3,
-    },
-    {
-        "id": "oes_l3_s4",
-        "level": 3,
-        "prompt": "How do birds fly? {optim_str}",
-        "target": "using magnetic fields",  # Wrong mechanism
-        "expected": "wing lift and thrust",
-        "plausibility": 3,
-        "prompt_tokens": 7,
-        "target_tokens": 3,
-    },
-    {
-        "id": "oes_l3_s5",
-        "level": 3,
-        "prompt": "Why is the sky blue? {optim_str}",
-        "target": "ocean reflection",  # Common misconception
-        "expected": "light scattering",
-        "plausibility": 4,
-        "prompt_tokens": 8,
-        "target_tokens": 2,
-    },
-    # Level 4: Technical open-ended
-    {
-        "id": "oes_l4_s1",
-        "level": 4,
-        "prompt": "Define recursion: {optim_str}",
-        "target": "sequential execution",  # Wrong concept
-        "expected": "function calling itself",
-        "plausibility": 3,
-        "prompt_tokens": 5,
-        "target_tokens": 2,
-    },
-    {
-        "id": "oes_l4_s2",
-        "level": 4,
-        "prompt": "Explain polymorphism: {optim_str}",
-        "target": "code duplication",  # Wrong OOP concept
-        "expected": "multiple forms/interfaces",
-        "plausibility": 2,
-        "prompt_tokens": 5,
-        "target_tokens": 2,
-    },
-    {
-        "id": "oes_l4_s3",
-        "level": 4,
-        "prompt": "What is machine learning? {optim_str}",
-        "target": "hardcoded rules",  # Opposite approach
-        "expected": "learning from data patterns",
-        "plausibility": 2,
-        "prompt_tokens": 7,
-        "target_tokens": 2,
-    },
-    {
-        "id": "oes_l4_s4",
-        "level": 4,
-        "prompt": "Describe encryption: {optim_str}",
-        "target": "data compression",  # Different concept
-        "expected": "securing data with keys",
-        "plausibility": 3,
-        "prompt_tokens": 5,
-        "target_tokens": 2,
-    },
-    {
-        "id": "oes_l4_s5",
-        "level": 4,
-        "prompt": "Define API: {optim_str}",
-        "target": "user interface",  # UI not API
-        "expected": "application programming interface",
-        "plausibility": 3,
-        "prompt_tokens": 5,
-        "target_tokens": 2,
-    },
-]
-
-# Open-ended long samples - extensive context with abstract targets
-OPEN_ENDED_LONG_SAMPLES = [
-    # Level 1: Long but simple
     {
         "id": "oel_l1_s1",
         "level": 1,
@@ -801,11 +379,6 @@ OPEN_ENDED_LONG_SAMPLES = [
         "prompt_tokens": 165,
         "target_tokens": 3,
     },
-]
-
-# Medium-length samples (100-500 tokens) for comprehensive testing
-MEDIUM_LENGTH_SAMPLES = [
-    # 100-150 token range samples
     {
         "id": "ml_100_s1",
         "level": 2,
@@ -1315,11 +888,6 @@ MEDIUM_LENGTH_SAMPLES = [
         "prompt_tokens": 490,
         "target_tokens": 2,
     },
-]
-
-# Extra long samples (500+ tokens) for complex tasks
-EXTRA_LONG_SAMPLES = [
-    # Question answering with extensive context
     {
         "id": "xl_qa_s1",
         "level": 4,
@@ -1633,33 +1201,6 @@ Given this comprehensive environmental impact assessment covering ecological, ec
     },
 ]
 
-# Combine all samples
-ALL_SAMPLES = (
-    LEVEL_1_SAMPLES
-    + LEVEL_2_SAMPLES
-    + LEVEL_3_SAMPLES
-    + LEVEL_4_SAMPLES
-    + VERY_SHORT_SAMPLES
-    + VERY_LONG_SAMPLES
-    + OPEN_ENDED_SHORT_SAMPLES
-    + OPEN_ENDED_LONG_SAMPLES
-    + MEDIUM_LENGTH_SAMPLES
-    + EXTRA_LONG_SAMPLES
-)
-
-# Define new samples separately for easy access
-NEW_SAMPLES = OPEN_ENDED_SHORT_SAMPLES + OPEN_ENDED_LONG_SAMPLES + MEDIUM_LENGTH_SAMPLES
-
-# Original samples before adding new ones
-ORIGINAL_SAMPLES = (
-    LEVEL_1_SAMPLES
-    + LEVEL_2_SAMPLES
-    + LEVEL_3_SAMPLES
-    + LEVEL_4_SAMPLES
-    + VERY_SHORT_SAMPLES
-    + VERY_LONG_SAMPLES
-)
-
 
 def get_samples_by_level(level: int):
     """Get all samples for a specific level."""
@@ -1676,18 +1217,52 @@ def get_sample_by_id(sample_id: str):
 
 def get_samples_by_length_category(category: str):
     """Get samples by length category."""
-    if category == "very_short":
-        return [s for s in ALL_SAMPLES if s.get("prompt_tokens", 0) < 10]
-    elif category == "short":
-        return [s for s in ALL_SAMPLES if 10 <= s.get("prompt_tokens", 0) < 50]
-    elif category == "medium":
-        return [s for s in ALL_SAMPLES if 30 <= s.get("prompt_tokens", 0) < 200]
-    elif category == "long":
-        return [s for s in ALL_SAMPLES if 50 <= s.get("prompt_tokens", 0) < 400]
-    elif category == "very_long":
+    if category == "short (< 50)":
+        return [s for s in ALL_SAMPLES if s.get("prompt_tokens", 0) < 50]
+    elif category == "medium (50-200)":
+        return [s for s in ALL_SAMPLES if 50 <= s.get("prompt_tokens", 0) < 200]
+    elif category == "long (200-400)":
+        return [s for s in ALL_SAMPLES if 200 <= s.get("prompt_tokens", 0) < 400]
+    elif category == "very_long (> 400)":
         return [s for s in ALL_SAMPLES if s.get("prompt_tokens", 0) >= 400]
     else:
         return []
+
+
+def get_samples_sorted_by_length():
+    """Get all samples sorted by prompt token length."""
+    return sorted(ALL_SAMPLES, key=lambda x: x.get("prompt_tokens", 0))
+
+
+def get_samples_by_length_quartile():
+    """
+    Group samples into 4 quartiles by token length.
+    Returns a dictionary with keys: short, medium, long, very_long
+    """
+    sorted_samples = get_samples_sorted_by_length()
+    total = len(sorted_samples)
+    
+    if total == 0:
+        return {"short": [], "medium": [], "long": [], "very_long": []}
+    
+    # Calculate quartile sizes
+    q_size = total // 4
+    remainder = total % 4
+    
+    # Distribute samples into quartiles
+    boundaries = []
+    current = 0
+    for i in range(4):
+        size = q_size + (1 if i < remainder else 0)
+        boundaries.append((current, current + size))
+        current += size
+    
+    return {
+        "short": sorted_samples[boundaries[0][0]:boundaries[0][1]],
+        "medium": sorted_samples[boundaries[1][0]:boundaries[1][1]], 
+        "long": sorted_samples[boundaries[2][0]:boundaries[2][1]],
+        "very_long": sorted_samples[boundaries[3][0]:boundaries[3][1]]
+    }
 
 
 def get_samples_by_plausibility(min_plausibility: int, max_plausibility: int = 5):
@@ -1701,32 +1276,39 @@ def get_samples_by_plausibility(min_plausibility: int, max_plausibility: int = 5
 
 def get_new_samples():
     """Get only the newly added samples."""
-    return NEW_SAMPLES
+    # Return samples with specific IDs that were newly added
+    new_ids = ['oes_', 'oel_', 'xl_', 'ml_']  # Prefixes for new sample types
+    return [s for s in ALL_SAMPLES if any(s['id'].startswith(prefix) for prefix in new_ids)]
 
 
 def get_open_ended_samples():
     """Get all open-ended samples (both short and long)."""
-    return OPEN_ENDED_SHORT_SAMPLES + OPEN_ENDED_LONG_SAMPLES
+    return [s for s in ALL_SAMPLES if s['id'].startswith('oes_') or s['id'].startswith('oel_')]
 
 
 def get_samples_by_group(group_name: str):
     """Get samples by specific group name."""
+    # Get length-based quartiles
+    length_quartiles = get_samples_by_length_quartile()
+    
     groups = {
-        "level_1": LEVEL_1_SAMPLES,
-        "level_2": LEVEL_2_SAMPLES,
-        "level_3": LEVEL_3_SAMPLES,
-        "level_4": LEVEL_4_SAMPLES,
-        "very_short": VERY_SHORT_SAMPLES,
-        "very_long": VERY_LONG_SAMPLES,
-        "open_ended_short": OPEN_ENDED_SHORT_SAMPLES,
-        "open_ended_long": OPEN_ENDED_LONG_SAMPLES,
-        "medium_length": MEDIUM_LENGTH_SAMPLES,
-        "medium1": MEDIUM_LENGTH_SAMPLES[: len(MEDIUM_LENGTH_SAMPLES) // 2],
-        "medium2": MEDIUM_LENGTH_SAMPLES[len(MEDIUM_LENGTH_SAMPLES) // 2 :],
-        "extra_long": EXTRA_LONG_SAMPLES,
-        "new": NEW_SAMPLES,
-        "original": ORIGINAL_SAMPLES,
+        # Length-based quartile groups (primary)
+        "short": length_quartiles["short"],
+        "medium": length_quartiles["medium"],
+        "long": length_quartiles["long"],
+        "very_long": length_quartiles["very_long"],
+        # Level-based groups
+        "level_1": get_samples_by_level(1),
+        "level_2": get_samples_by_level(2),
+        "level_3": get_samples_by_level(3),
+        "level_4": get_samples_by_level(4),
+        # Special groups
+        "open_ended": get_open_ended_samples(),
+        "new": get_new_samples(),
         "all": ALL_SAMPLES,
+        # Legacy groups (for backward compatibility)
+        "extra_long": [s for s in ALL_SAMPLES if s['id'].startswith('xl_')],
+        "medium_length": [s for s in ALL_SAMPLES if s['id'].startswith('ml_')],
     }
     return groups.get(group_name, [])
 
@@ -1740,8 +1322,21 @@ def print_sample_stats():
         level_samples = get_samples_by_level(level)
         print(f"  Level {level}: {len(level_samples)} samples")
 
-    print(f"\nSamples by length category:")
-    for category in ["very_short", "short", "medium", "long", "very_long"]:
+    print(f"\nSamples by length quartiles:")
+    quartiles = get_samples_by_length_quartile()
+    for name, samples in quartiles.items():
+        if samples:
+            min_tokens = min(s.get('prompt_tokens', 0) for s in samples)
+            max_tokens = max(s.get('prompt_tokens', 0) for s in samples)
+            print(f"  {name}: {len(samples)} samples (tokens: {min_tokens}-{max_tokens})")
+    
+    print(f"\nSamples by token ranges:")
+    for category in [
+        "short (< 50)",
+        "medium (50-200)",
+        "long (200-400)",
+        "very_long (> 400)",
+    ]:
         cat_samples = get_samples_by_length_category(category)
         print(f"  {category}: {len(cat_samples)} samples")
 
