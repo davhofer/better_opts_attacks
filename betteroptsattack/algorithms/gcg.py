@@ -2,13 +2,39 @@ import torch
 import transformers
 import typing
 import numpy as np
-from betteroptsattack.utils import attack_utility
+from betteroptsattack.utils import attack_utility as attack_utility
 import random
-from betteroptsattack.utils import experiment_logger
+from betteroptsattack.utils import experiment_logger as experiment_logger
 import gc
+import json
+import time
+from pathlib import Path
 
 
 GCG_LOSS_FUNCTION = attack_utility.UNREDUCED_CE_LOSS
+
+
+def check_argmax_match(
+    model: transformers.AutoModelForCausalLM,
+    tokenizer: transformers.AutoTokenizer,
+    current_tokens: torch.Tensor,
+    masks_data: typing.Dict[str, torch.Tensor],
+    target_tokens: torch.Tensor
+) -> bool:
+    """Check if argmax of logits matches target tokens."""
+    with torch.no_grad():
+        # Get logits for the current tokens
+        logits = model(current_tokens.unsqueeze(0).to(model.device)).logits[0]
+        
+        # Get predictions at target positions (shift by 1 for causal LM)
+        target_mask = masks_data["target_mask"]
+        pred_logits = logits[target_mask - 1]
+        
+        # Get argmax predictions
+        predictions = torch.argmax(pred_logits, dim=-1)
+        
+        # Check if they match target
+        return torch.all(predictions.cpu() == target_tokens.cpu()).item()
 
 
 def check_generation_starts_with_target(
@@ -29,33 +55,39 @@ def og_gcg_signal(
     logger: experiment_logger.ExperimentLogger,
     *,
     step_num,
+    clamp_tokens: bool = True,
     **kwargs
 ):
     optim_mask: torch.Tensor = masks_data["optim_mask"]
     target_mask: torch.Tensor = masks_data["target_mask"]
 
-    # Get vocabulary size from embedding layer
-    embedding_size = model.get_input_embeddings().weight.shape[0]
-    vocab_size = embedding_size
-    
-    # Check if any tokens exceed vocab_size and clamp if necessary
+    # Get vocabulary size from embedding layer (modern approach)
+    vocab_size = model.get_input_embeddings().weight.shape[0]
+
+    # Check if any tokens exceed vocab_size and clamp if requested
     max_token_id = input_points.max().item()
     if max_token_id >= vocab_size:
-        if logger:
-            logger.log(f"WARNING: Token ID {max_token_id} exceeds vocab size {vocab_size}, clamping tokens", event_type="warning")
-        # Clamp tokens to valid range
-        input_points = input_points.clamp(max=vocab_size-1)
+        if clamp_tokens:
+            if logger:
+                logger.log(f"WARNING: Token ID {max_token_id} exceeds vocab size {vocab_size}, clamping tokens", event_type="warning")
+            # Clamp tokens to valid range
+            input_points = input_points.clamp(max=vocab_size-1)
+        else:
+            if logger:
+                logger.log(f"ERROR: Token ID {max_token_id} exceeds vocab size {vocab_size}, but clamping is disabled", event_type="error")
+            # Return random indices as fallback
+            return torch.stack([torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])])
 
     one_hot_tensor = torch.nn.functional.one_hot(input_points.clone().detach(), num_classes=vocab_size).to(dtype=model.dtype)
     one_hot_tensor.requires_grad_()
-    embedding_tensor = model.get_input_embeddings().weight[:vocab_size]
+    embedding_tensor = model.get_input_embeddings().weight
     inputs_embeds = torch.unsqueeze(one_hot_tensor.to(embedding_tensor.device) @ embedding_tensor, 0)
     
     # Add NaN check for logits
     logits = model(inputs_embeds=inputs_embeds).logits
     if torch.isnan(logits).any() or torch.isinf(logits).any():
         if logger:
-            logger.log("WARNING: NaN or Inf detected in logits", event_type="warning")
+            logger.log_event("WARNING: NaN or Inf detected in logits")
         # Return random indices as fallback
         return torch.stack([torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])])
     
@@ -64,7 +96,7 @@ def og_gcg_signal(
     # Add NaN check for loss
     if torch.isnan(loss_tensor).item():
         if logger:
-            logger.log("WARNING: NaN detected in loss", event_type="warning")
+            logger.log_event("WARNING: NaN detected in loss")
         # Return random indices as fallback
         return torch.stack([torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])])
     
@@ -73,7 +105,7 @@ def og_gcg_signal(
     # Add NaN check for gradients
     if one_hot_tensor.grad is None or torch.isnan(one_hot_tensor.grad).any():
         if logger:
-            logger.log("WARNING: NaN detected in gradients", event_type="warning")
+            logger.log_event("WARNING: NaN detected in gradients")
         # Return random indices as fallback
         return torch.stack([torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])])
     
@@ -88,25 +120,32 @@ def neg_gcg_signal(
     masks_data: typing.Dict[str, torch.tensor],
     gcg_topk: int,
     logger: experiment_logger.ExperimentLogger,
+    *,
+    clamp_tokens: bool = True,
 ):
     optim_mask: torch.tensor = masks_data["optim_mask"]
     target_mask: torch.tensor = masks_data["target_mask"]
 
-    # Get vocabulary size from embedding layer
-    embedding_size = model.get_input_embeddings().weight.shape[0]
-    vocab_size = embedding_size
-    
-    # Check if any tokens exceed vocab_size and clamp if necessary
+    # Get vocabulary size from embedding layer (modern approach)
+    vocab_size = model.get_input_embeddings().weight.shape[0]
+
+    # Check if any tokens exceed vocab_size and clamp if requested
     max_token_id = input_points.max().item()
     if max_token_id >= vocab_size:
-        if logger:
-            logger.log(f"WARNING: Token ID {max_token_id} exceeds vocab size {vocab_size}, clamping tokens", event_type="warning")
-        # Clamp tokens to valid range
-        input_points = input_points.clamp(max=vocab_size-1)
+        if clamp_tokens:
+            if logger:
+                logger.log(f"WARNING: Token ID {max_token_id} exceeds vocab size {vocab_size}, clamping tokens", event_type="warning")
+            # Clamp tokens to valid range
+            input_points = input_points.clamp(max=vocab_size-1)
+        else:
+            if logger:
+                logger.log(f"ERROR: Token ID {max_token_id} exceeds vocab size {vocab_size}, but clamping is disabled", event_type="error")
+            # Return random indices as fallback
+            return torch.stack([torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])])
 
     one_hot_tensor = torch.nn.functional.one_hot(input_points.clone().detach(), num_classes=vocab_size).to(dtype=model.dtype)
     one_hot_tensor.requires_grad_()
-    embedding_tensor = model.get_input_embeddings().weight[:vocab_size]
+    embedding_tensor = model.get_input_embeddings().weight
     inputs_embeds = torch.unsqueeze(one_hot_tensor.to(embedding_tensor.device) @ embedding_tensor, 0)
     logits = model(inputs_embeds=inputs_embeds).logits
     loss_tensor = GCG_LOSS_FUNCTION(logits[0, target_mask - 1, :], input_points[target_mask].to(logits.device)).sum()
@@ -122,13 +161,17 @@ def rand_gcg_signal(
     masks_data: typing.Dict[str, torch.tensor],
     gcg_topk: int,
     logger: experiment_logger.ExperimentLogger,
+    *,
+    clamp_tokens: bool = True,
     **kwargs
 ):
     optim_mask: torch.tensor = masks_data["optim_mask"]
 
-    # Get vocabulary size from embedding layer
+    # Get vocabulary size from embedding layer (modern approach)
     vocab_size = model.get_input_embeddings().weight.shape[0]
 
+    # Note: rand_gcg_signal doesn't use input_points, so no need to check for token clamping
+    # This is a random signal function
     best_tokens_indices = torch.stack([torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])])
     return best_tokens_indices
 
@@ -138,13 +181,17 @@ def universal_rand_gcg_signal(
     input_tokenized_data_list,
     gcg_topk,
     logger,
+    *,
+    clamp_tokens: bool = True,
     **kwargs
 ):
     optim_mask = input_tokenized_data_list[0]["masks"]["optim_mask"]
 
-    # Get vocabulary size from embedding layer of first model
+    # Get vocabulary size from embedding layer of first model (modern approach)
     vocab_size = models[0].get_input_embeddings().weight.shape[0]
 
+    # Note: universal_rand_gcg_signal doesn't use input_points, so no need to check for token clamping
+    # This is a random signal function
     best_tokens_indices = torch.stack([torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])])
     return best_tokens_indices
 
@@ -164,10 +211,22 @@ def custom_gcg(
     identical_outputs_before_stop,
     generation_config,
     to_cache_logits,
-    to_cache_attentions
+    to_cache_attentions,
+    clamp_tokens: bool = True,
+    # Enhanced metrics parameters
+    enable_enhanced_metrics: bool = False,
+    save_metrics_path: typing.Optional[str] = None,
+    check_extended_metrics_every_n_steps: int = 10,
+    save_adv_string_every_n_steps: int = 25
 ):
 
     logger.log(input_tokenized_data)
+
+    # Setup enhanced metrics if enabled
+    per_step_metrics = []
+    if enable_enhanced_metrics and save_metrics_path:
+        metrics_file = Path(save_metrics_path)
+        metrics_file.parent.mkdir(parents=True, exist_ok=True)
 
     if to_cache_logits:
         target_logprobs = attack_utility.CachedTargetLogprobs(to_cache=True)
@@ -200,6 +259,7 @@ def custom_gcg(
         true_loss_kwargs = {}
     true_loss_kwargs["att_cacher"] = att_cacher
     if eval_initial:
+        step_start_time = time.time()
         initial_true_loss = true_loss_function(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger, **true_loss_kwargs)
         logger.log(initial_true_loss, step_num=-1)
         best_output_sequences.append(current_best_tokens.clone())
@@ -214,6 +274,24 @@ def custom_gcg(
         input_length = len(input_tokens_for_generation)
         generated_output_string = tokenizer.batch_decode(generated_output_tokens[:, input_length:])[0]
         logger.log(generated_output_string, step_num=-1)
+        
+        # Extended metrics for initial state (only if enhanced metrics enabled)
+        if enable_enhanced_metrics and save_metrics_path:
+            target_tokens = input_tokens[target_mask]
+            argmax_matches = check_argmax_match(model, tokenizer, current_best_tokens, masks_data, target_tokens)
+            starts_with_target = check_generation_starts_with_target(generated_output_string, target_tokens, tokenizer)
+
+            initial_metric = {
+                "step": -1,
+                "loss": initial_logprobs,
+                "argmax_matches_target": argmax_matches,
+                "generation_starts_with_target": starts_with_target,
+                "generated_text": generated_output_string[:100],
+                "time_elapsed": time.time() - step_start_time
+            }
+            per_step_metrics.append(initial_metric)
+            with open(metrics_file, 'w') as f:
+                f.write(json.dumps(initial_metric) + '\n')
 
     step_num = 0
 
@@ -226,8 +304,9 @@ def custom_gcg(
     generated_output_string_chunk = []
 
     for step_num in range(custom_gcg_hyperparams["max_steps"]):
+        step_start_time = time.time()
         
-        best_tokens_indices = signal_function(model, tokenizer, current_best_tokens, masks_data, custom_gcg_hyperparams["topk"], logger, step_num=step_num, **(signal_kwargs or {}))
+        best_tokens_indices = signal_function(model, tokenizer, current_best_tokens, masks_data, custom_gcg_hyperparams["topk"], logger, step_num=step_num, clamp_tokens=clamp_tokens, **(signal_kwargs or {}))
         
         indices_to_sample = set()
         indices_to_exclude = set()
@@ -279,7 +358,59 @@ def custom_gcg(
         logprobs = target_logprobs(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger)
         logprobs = logprobs.item()
         logprobs_chunk.append(logprobs)
-        logprobs_sequences.append(logprobs)        
+        logprobs_sequences.append(logprobs)
+        
+        # Extended metrics collection
+        if save_metrics_path:
+            target_tokens = input_tokens[target_mask]
+            
+            # Always check argmax match
+            argmax_matches = check_argmax_match(model, tokenizer, current_best_tokens, masks_data, target_tokens)
+            
+            # Prepare step metrics
+            step_metric = {
+                "step": step_num,
+                "loss": logprobs,
+                "argmax_matches_target": argmax_matches,
+                "time_elapsed": time.time() - step_start_time
+            }
+            
+            # Check extended metrics periodically (only if enhanced metrics enabled)
+            if enable_enhanced_metrics and step_num % check_extended_metrics_every_n_steps == 0:
+                # Generate text for extended checks
+                with torch.no_grad():
+                    input_tokens_for_generation = current_best_tokens[eval_input_mask]
+                    generated_tokens = model.generate(
+                        torch.unsqueeze(input_tokens_for_generation, dim=0).to(model.device),
+                        attention_mask=torch.unsqueeze(torch.ones(input_tokens_for_generation.shape), dim=0).to(model.device),
+                        **generation_config
+                    )
+                    # Get the actual number of input tokens used for generation
+                    input_length = len(input_tokens_for_generation)
+                    extended_generated_text = tokenizer.batch_decode(generated_tokens[:, input_length:])[0]
+                
+                starts_with_target = check_generation_starts_with_target(extended_generated_text, target_tokens, tokenizer)
+                
+                step_metric["generation_starts_with_target"] = starts_with_target
+                step_metric["generated_text"] = extended_generated_text[:100]
+            
+            # Save adversarial string periodically (only if enhanced metrics enabled)
+            if enable_enhanced_metrics and step_num % save_adv_string_every_n_steps == 0:
+                # Get prefix and suffix tokens separately
+                prefix_tokens = current_best_tokens[masks_data["prefix_mask"]]
+                suffix_tokens = current_best_tokens[masks_data["suffix_mask"]]
+                # Decode with separator to show as it appears in the prompt
+                prefix_str = tokenizer.decode(prefix_tokens)
+                suffix_str = tokenizer.decode(suffix_tokens)
+                step_metric["current_adv_string"] = f"{prefix_str} . {suffix_str}"
+            
+            # Save metrics incrementally (only if enhanced metrics enabled)
+            if enable_enhanced_metrics:
+                per_step_metrics.append(step_metric)
+                if save_metrics_path:
+                    with open(metrics_file, 'a') as f:
+                        f.write(json.dumps(step_metric) + '\n')
+        
         if eval_every_step:
             input_tokens_for_generation = current_best_tokens[eval_input_mask]
             generated_output_tokens = model.generate(torch.unsqueeze(input_tokens_for_generation, dim=0).to(model.device), attention_mask=torch.unsqueeze(torch.ones(input_tokens_for_generation.shape), dim=0).to(model.device), **generation_config)
@@ -292,6 +423,23 @@ def custom_gcg(
                 if check_generation_starts_with_target(generated_output_string, input_tokenized_data["tokens"][target_mask], tokenizer):
                     successive_correct_outputs += 1
                     if successive_correct_outputs >= identical_outputs_before_stop:
+                        # Log early stopping with extended metrics if enabled
+                        if enable_enhanced_metrics and save_metrics_path and "current_adv_string" not in step_metric:
+                            # Add final adversarial string before stopping
+                            prefix_tokens = current_best_tokens[masks_data["prefix_mask"]]
+                            suffix_tokens = current_best_tokens[masks_data["suffix_mask"]]
+                            prefix_str = tokenizer.decode(prefix_tokens)
+                            suffix_str = tokenizer.decode(suffix_tokens)
+                            step_metric["current_adv_string"] = f"{prefix_str} . {suffix_str}"
+                            step_metric["early_stop"] = True
+                            # Re-save the metric with early stop indicator
+                            per_step_metrics[-1] = step_metric
+                            # Rewrite the last line in the file
+                            with open(metrics_file, 'r') as f:
+                                lines = f.readlines()
+                            lines[-1] = json.dumps(step_metric) + '\n'
+                            with open(metrics_file, 'w') as f:
+                                f.writelines(lines)
                         break
                 else:
                     successive_correct_outputs = 0
@@ -314,7 +462,19 @@ def custom_gcg(
             generated_output_string_chunk = []
 
     logger.log(successive_correct_outputs, num_steps=step_num)
-    return logprobs_sequences, best_output_sequences
+    
+    # Return extended results if enhanced metrics were enabled
+    if enable_enhanced_metrics:
+        return {
+            "logprobs_sequences": logprobs_sequences,
+            "best_output_sequences": best_output_sequences,
+            "per_step_metrics": per_step_metrics,
+            "final_success": successive_correct_outputs >= identical_outputs_before_stop,
+            "total_steps": step_num + 1
+        }
+    else:
+        # Maintain backward compatibility - return original format
+        return logprobs_sequences, best_output_sequences
 
 def average_target_logprobs_signal(
     models: list[transformers.AutoModelForCausalLM],
@@ -342,19 +502,26 @@ def average_target_logprobs_signal(
             optim_mask: torch.Tensor = masks_data["optim_mask"]
             target_mask: torch.Tensor = masks_data["target_mask"]
             
-            # Get vocabulary size from embedding layer
-            embedding_size = model.get_input_embeddings().weight.shape[0]
-            vocab_size = embedding_size
-            
-            # Check if any tokens exceed vocab_size and clamp if necessary
+            # Get vocabulary size from embedding layer (modern approach)
+            vocab_size = model.get_input_embeddings().weight.shape[0]
+
+            # Check if any tokens exceed vocab_size and clamp if requested
             max_token_id = input_points.max().item()
             if max_token_id >= vocab_size:
-                # Clamp tokens to valid range
-                input_points = input_points.clamp(max=vocab_size-1)
-            
+                if clamp_tokens:
+                    if logger:
+                        logger.log(f"WARNING: Token ID {max_token_id} exceeds vocab size {vocab_size}, clamping tokens", event_type="warning")
+                    # Clamp tokens to valid range
+                    input_points = input_points.clamp(max=vocab_size-1)
+                else:
+                    if logger:
+                        logger.log(f"ERROR: Token ID {max_token_id} exceeds vocab size {vocab_size}, but clamping is disabled", event_type="error")
+                    # Skip this input and continue with next
+                    continue
+
             one_hot_tensor = torch.nn.functional.one_hot(input_points.clone().detach(), num_classes=vocab_size).to(dtype=model.dtype)
             one_hot_tensor.requires_grad_()
-            embedding_tensor = model.get_input_embeddings().weight[:vocab_size]
+            embedding_tensor = model.get_input_embeddings().weight
             inputs_embeds = torch.unsqueeze(one_hot_tensor.to(embedding_tensor.device) @ embedding_tensor, 0)
             logits = model(inputs_embeds=inputs_embeds).logits
             loss_tensor = GCG_LOSS_FUNCTION(logits[0, target_mask - 1, :], input_points[target_mask].to(logits.device)).sum()
@@ -435,7 +602,8 @@ def weakly_universal_gcg(
     eval_initial,
     generation_config,
     to_cache_logits,
-    to_cache_attentions    
+    to_cache_attentions,
+    clamp_tokens: bool = True
 ):
     logger.log(input_tokenized_data_list)
 
@@ -491,7 +659,7 @@ def weakly_universal_gcg(
 
         step_begin_state = on_step_begin(models, tokenizer, current_input_tokenized_data_list, universal_gcg_hyperparameters, logger, step_num=step_num, **on_step_begin_kwargs)
 
-        best_tokens_indices = signal_function(models, tokenizer, current_input_tokenized_data_list, universal_gcg_hyperparameters["topk"], logger, step_num=step_num, **(signal_kwargs or {}))
+        best_tokens_indices = signal_function(models, tokenizer, current_input_tokenized_data_list, universal_gcg_hyperparameters["topk"], logger, step_num=step_num, clamp_tokens=clamp_tokens, **(signal_kwargs or {}))
         forward_eval_candidates = randomness_strategy(tokenizer, best_tokens_indices, current_input_tokenized_data_list, substitution_validity_function, universal_gcg_hyperparameters["forward_eval_candidates"])
         true_losses = true_loss_function(models, tokenizer, forward_eval_candidates, masks_data_list, logger, step_num=step_num, **(true_loss_kwargs or {}))
         true_losses_chunk.append(true_losses)

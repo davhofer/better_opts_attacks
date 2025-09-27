@@ -28,7 +28,7 @@ except ImportError:
         return iterable
 
 # Import package modules
-from betteroptsattack.algorithms import gcg_enhanced
+from betteroptsattack.algorithms import gcg
 from betteroptsattack.utils import attack_utility, experiment_logger
 from betteroptsattack.test_samples import (
     ALL_SAMPLES,
@@ -246,7 +246,7 @@ def run_enhanced_gcg_attack(
 
     # Configure GCG hyperparameters
     gcg_hyperparams = {
-        "signal_function": gcg_enhanced.og_gcg_signal,
+        "signal_function": gcg.og_gcg_signal,
         "true_loss_function": attack_utility.target_logprobs,
         "max_steps": args.max_steps,
         "topk": args.topk,
@@ -259,7 +259,7 @@ def run_enhanced_gcg_attack(
     # Run enhanced GCG attack
     start_time = time.time()
 
-    result = gcg_enhanced.custom_gcg(
+    result = gcg.custom_gcg(
         model=model,
         tokenizer=tokenizer,
         input_tokenized_data=input_tokenized_data,
@@ -273,7 +273,8 @@ def run_enhanced_gcg_attack(
         generation_config=attack_utility.DEFAULT_TEXT_GENERATION_CONFIG,
         to_cache_logits=False,
         to_cache_attentions=False,
-        # Extended logging parameters
+        # Enhanced metrics parameters
+        enable_enhanced_metrics=True,
         save_metrics_path=str(metrics_file),
         check_extended_metrics_every_n_steps=args.check_metrics_every,
         save_adv_string_every_n_steps=args.save_adv_every,

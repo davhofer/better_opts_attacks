@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `run_gcg_enhanced.py` script provides a test runner that uses the enhanced GCG implementation from `algorithms/gcg_enhanced.py`. This implementation includes extended logging capabilities while maintaining the core GCG algorithm functionality.
+The `run_gcg_enhanced.py` script provides a test runner that uses the enhanced GCG implementation from `algorithms/gcg.py` with `enable_enhanced_metrics=True`. The consolidated GCG implementation includes optional extended logging capabilities while maintaining the core GCG algorithm functionality.
 
 ## Key Features
 
@@ -19,7 +19,7 @@ The `run_gcg_enhanced.py` script provides a test runner that uses the enhanced G
 
 | Feature            | evaluate_gcg_extended.py | run_gcg_enhanced.py      |
 | ------------------ | ------------------------ | ------------------------ |
-| GCG Implementation | Custom simplified        | Production gcg_enhanced  |
+| GCG Implementation | Custom simplified        | Production gcg (enhanced)|
 | Loss Computation   | Same (cross-entropy)     | Same (cross-entropy)     |
 | Gradient Caching   | No                       | Optional                 |
 | Exact Match        | No                       | Yes (for early stopping) |
