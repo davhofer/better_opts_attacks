@@ -9,6 +9,7 @@ import gc
 import json
 import time
 from pathlib import Path
+from tqdm import tqdm
 
 
 GCG_LOSS_FUNCTION = attack_utility.UNREDUCED_CE_LOSS
@@ -303,7 +304,13 @@ def custom_gcg(
     logprobs_chunk = []
     generated_output_string_chunk = []
 
-    for step_num in range(custom_gcg_hyperparams["max_steps"]):
+    # Create progress bar for optimization steps
+    pbar = tqdm(range(custom_gcg_hyperparams["max_steps"]),
+                desc="GCG Optimization",
+                unit="step",
+                disable=False)
+
+    for step_num in pbar:
         step_start_time = time.time()
         
         best_tokens_indices = signal_function(model, tokenizer, current_best_tokens, masks_data, custom_gcg_hyperparams["topk"], logger, step_num=step_num, clamp_tokens=clamp_tokens, **(signal_kwargs or {}))
@@ -359,6 +366,13 @@ def custom_gcg(
         logprobs = logprobs.item()
         logprobs_chunk.append(logprobs)
         logprobs_sequences.append(logprobs)
+
+        # Update progress bar with current loss
+        pbar.set_postfix({
+            'Loss': f'{logprobs:.4f}',
+            'Best': f'{min(logprobs_sequences):.4f}',
+            'Success': f'{successive_correct_outputs}'
+        })
         
         # Extended metrics collection
         if save_metrics_path:
@@ -423,6 +437,15 @@ def custom_gcg(
                 if check_generation_starts_with_target(generated_output_string, input_tokenized_data["tokens"][target_mask], tokenizer):
                     successive_correct_outputs += 1
                     if successive_correct_outputs >= identical_outputs_before_stop:
+                        # Update progress bar for early stopping
+                        pbar.set_description("GCG Optimization (Early Stop)")
+                        pbar.set_postfix({
+                            'Loss': f'{logprobs:.4f}',
+                            'Best': f'{min(logprobs_sequences):.4f}',
+                            'Success': f'{successive_correct_outputs}',
+                            'Status': 'SUCCESS'
+                        })
+
                         # Log early stopping with extended metrics if enabled
                         if enable_enhanced_metrics and save_metrics_path and "current_adv_string" not in step_metric:
                             # Add final adversarial string before stopping
@@ -460,6 +483,9 @@ def custom_gcg(
             best_tokens_chunk = []
             logprobs_chunk = []
             generated_output_string_chunk = []
+
+    # Close progress bar
+    pbar.close()
 
     logger.log(successive_correct_outputs, num_steps=step_num)
     
@@ -655,7 +681,14 @@ def weakly_universal_gcg(
 
 
     current_input_tokenized_data_list = input_tokenized_data_list
-    for step_num in range(universal_gcg_hyperparameters["max_steps"]):
+
+    # Create progress bar for universal optimization steps
+    pbar = tqdm(range(universal_gcg_hyperparameters["max_steps"]),
+                desc="Universal GCG Optimization",
+                unit="step",
+                disable=False)
+
+    for step_num in pbar:
 
         step_begin_state = on_step_begin(models, tokenizer, current_input_tokenized_data_list, universal_gcg_hyperparameters, logger, step_num=step_num, **on_step_begin_kwargs)
 
@@ -677,6 +710,13 @@ def weakly_universal_gcg(
         average_logprobs_list.append(average_logprobs.item())
         current_input_tokenized_data_list = attack_utility.update_all_tokens(best_tokens_dict, current_input_tokenized_data_list)
 
+        # Update progress bar with current loss
+        pbar.set_postfix({
+            'Loss': f'{best_loss:.4f}',
+            'Avg_Loss': f'{average_logprobs.item():.4f}',
+            'Best': f'{min(average_logprobs_list):.4f}'
+        })
+
         if (step_num + 1) % 10 == 0:
             logger.log(true_losses_chunk, step_num=step_num)
             logger.log(current_best_true_loss_chunk, step_num=step_num)
@@ -692,5 +732,8 @@ def weakly_universal_gcg(
 
         gc.collect()
         torch.cuda.empty_cache()
+
+    # Close progress bar
+    pbar.close()
 
     return best_tokens_dicts_list, average_logprobs_list

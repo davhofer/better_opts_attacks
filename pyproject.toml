@@ -37,7 +37,7 @@ dependencies = [
     "bitsandbytes",
     "fschat",
     "sentencepiece",
-    "protobuf>=3.20.0",  # Added to fix Vicuna issue
+    "protobuf>=3.20.0", # Added to fix Vicuna issue
     "agentdojo[transformers]",
     "gpt-oss[torch]",
     "matplotlib",
