@@ -12,6 +12,41 @@ from concurrent.futures import ThreadPoolExecutor
 
 from betteroptsattack.utils import experiment_logger as experiment_logger
 
+def get_nonascii_toks(tokenizer, device="cpu"):
+    """
+    Get a list of non-ASCII token IDs from the tokenizer vocabulary.
+
+    This includes:
+    - Tokens that decode to non-ASCII characters
+    - Tokens that decode to non-printable characters
+    - Special tokens (BOS, EOS, PAD, UNK)
+
+    Args:
+        tokenizer: HuggingFace tokenizer
+        device: Device to place the tensor on
+
+    Returns:
+        Tensor of token IDs that should be excluded from ASCII-only optimization
+    """
+    def is_ascii(s):
+        return s.isascii() and s.isprintable()
+
+    nonascii_toks = []
+    for i in range(tokenizer.vocab_size):
+        if not is_ascii(tokenizer.decode([i])):
+            nonascii_toks.append(i)
+
+    if tokenizer.bos_token_id is not None:
+        nonascii_toks.append(tokenizer.bos_token_id)
+    if tokenizer.eos_token_id is not None:
+        nonascii_toks.append(tokenizer.eos_token_id)
+    if tokenizer.pad_token_id is not None:
+        nonascii_toks.append(tokenizer.pad_token_id)
+    if tokenizer.unk_token_id is not None:
+        nonascii_toks.append(tokenizer.unk_token_id)
+
+    return torch.tensor(nonascii_toks, device=device)
+
 def invertibility_filter(token_ids, **kwargs):
     tokenizer = kwargs.get("tokenizer", None)
     if tokenizer is None:

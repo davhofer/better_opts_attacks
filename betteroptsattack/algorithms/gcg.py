@@ -57,6 +57,7 @@ def og_gcg_signal(
     *,
     step_num,
     clamp_tokens: bool = True,
+    ascii_only: bool = False,
     **kwargs
 ):
     optim_mask: torch.Tensor = masks_data["optim_mask"]
@@ -83,7 +84,7 @@ def og_gcg_signal(
     one_hot_tensor.requires_grad_()
     embedding_tensor = model.get_input_embeddings().weight
     inputs_embeds = torch.unsqueeze(one_hot_tensor.to(embedding_tensor.device) @ embedding_tensor, 0)
-    
+
     # Add NaN check for logits
     logits = model(inputs_embeds=inputs_embeds).logits
     if torch.isnan(logits).any() or torch.isinf(logits).any():
@@ -91,26 +92,33 @@ def og_gcg_signal(
             logger.log_event("WARNING: NaN or Inf detected in logits")
         # Return random indices as fallback
         return torch.stack([torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])])
-    
+
     loss_tensor = GCG_LOSS_FUNCTION(logits[0, target_mask - 1, :], input_points[target_mask].to(logits.device)).sum()
-    
+
     # Add NaN check for loss
     if torch.isnan(loss_tensor).item():
         if logger:
             logger.log_event("WARNING: NaN detected in loss")
         # Return random indices as fallback
         return torch.stack([torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])])
-    
+
     loss_tensor.backward()
-    
+
     # Add NaN check for gradients
     if one_hot_tensor.grad is None or torch.isnan(one_hot_tensor.grad).any():
         if logger:
             logger.log_event("WARNING: NaN detected in gradients")
         # Return random indices as fallback
         return torch.stack([torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])])
-    
+
     grad_optims = - (one_hot_tensor.grad[optim_mask, :])
+
+    # Apply ASCII-only filtering if requested
+    if ascii_only:
+        nonascii_toks = attack_utility.get_nonascii_toks(tokenizer, device=grad_optims.device)
+        # Set gradients for non-ASCII tokens to -inf so they won't be selected
+        grad_optims[:, nonascii_toks] = float('-inf')
+
     best_tokens_indices = grad_optims.topk(gcg_topk, dim=-1).indices
     return best_tokens_indices
 
@@ -123,6 +131,8 @@ def neg_gcg_signal(
     logger: experiment_logger.ExperimentLogger,
     *,
     clamp_tokens: bool = True,
+    ascii_only: bool = False,
+    **kwargs
 ):
     optim_mask: torch.tensor = masks_data["optim_mask"]
     target_mask: torch.tensor = masks_data["target_mask"]
@@ -152,6 +162,13 @@ def neg_gcg_signal(
     loss_tensor = GCG_LOSS_FUNCTION(logits[0, target_mask - 1, :], input_points[target_mask].to(logits.device)).sum()
     loss_tensor.backward()
     grad_optims = (one_hot_tensor.grad[optim_mask, :])
+
+    # Apply ASCII-only filtering if requested
+    if ascii_only:
+        nonascii_toks = attack_utility.get_nonascii_toks(tokenizer, device=grad_optims.device)
+        # Set gradients for non-ASCII tokens to -inf so they won't be selected
+        grad_optims[:, nonascii_toks] = float('-inf')
+
     best_tokens_indices = grad_optims.topk(gcg_topk, dim=-1).indices
     return best_tokens_indices
 
@@ -214,6 +231,7 @@ def custom_gcg(
     to_cache_logits,
     to_cache_attentions,
     clamp_tokens: bool = True,
+    ascii_only: bool = False,
     # Enhanced metrics parameters
     enable_enhanced_metrics: bool = False,
     save_metrics_path: typing.Optional[str] = None,
@@ -312,8 +330,8 @@ def custom_gcg(
 
     for step_num in pbar:
         step_start_time = time.time()
-        
-        best_tokens_indices = signal_function(model, tokenizer, current_best_tokens, masks_data, custom_gcg_hyperparams["topk"], logger, step_num=step_num, clamp_tokens=clamp_tokens, **(signal_kwargs or {}))
+
+        best_tokens_indices = signal_function(model, tokenizer, current_best_tokens, masks_data, custom_gcg_hyperparams["topk"], logger, step_num=step_num, clamp_tokens=clamp_tokens, ascii_only=ascii_only, **(signal_kwargs or {}))
         
         indices_to_sample = set()
         indices_to_exclude = set()
@@ -512,6 +530,7 @@ def average_target_logprobs_signal(
     step_num,
     canonical_device_idx = 0,
     normalize_grads_before_accumulation = True,
+    ascii_only: bool = False,
     **kwargs
 ):
     
@@ -562,8 +581,15 @@ def average_target_logprobs_signal(
     device_moved_grad_list = []
     for grads_list_batch_tensor in grads_list:
         device_moved_grad_list.append(grads_list_batch_tensor.to(canonical_device_idx))
-    
+
     final_grads = - torch.cat(device_moved_grad_list, dim=0).mean(dim=0)
+
+    # Apply ASCII-only filtering if requested
+    if ascii_only:
+        nonascii_toks = attack_utility.get_nonascii_toks(tokenizer, device=final_grads.device)
+        # Set gradients for non-ASCII tokens to -inf so they won't be selected
+        final_grads[:, nonascii_toks] = float('-inf')
+
     best_tokens_indices = final_grads.topk(gcg_topk, dim=-1).indices
     return best_tokens_indices
 
@@ -629,7 +655,8 @@ def weakly_universal_gcg(
     generation_config,
     to_cache_logits,
     to_cache_attentions,
-    clamp_tokens: bool = True
+    clamp_tokens: bool = True,
+    ascii_only: bool = False
 ):
     logger.log(input_tokenized_data_list)
 
@@ -692,7 +719,7 @@ def weakly_universal_gcg(
 
         step_begin_state = on_step_begin(models, tokenizer, current_input_tokenized_data_list, universal_gcg_hyperparameters, logger, step_num=step_num, **on_step_begin_kwargs)
 
-        best_tokens_indices = signal_function(models, tokenizer, current_input_tokenized_data_list, universal_gcg_hyperparameters["topk"], logger, step_num=step_num, clamp_tokens=clamp_tokens, **(signal_kwargs or {}))
+        best_tokens_indices = signal_function(models, tokenizer, current_input_tokenized_data_list, universal_gcg_hyperparameters["topk"], logger, step_num=step_num, clamp_tokens=clamp_tokens, ascii_only=ascii_only, **(signal_kwargs or {}))
         forward_eval_candidates = randomness_strategy(tokenizer, best_tokens_indices, current_input_tokenized_data_list, substitution_validity_function, universal_gcg_hyperparameters["forward_eval_candidates"])
         true_losses = true_loss_function(models, tokenizer, forward_eval_candidates, masks_data_list, logger, step_num=step_num, **(true_loss_kwargs or {}))
         true_losses_chunk.append(true_losses)
