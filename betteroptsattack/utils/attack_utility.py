@@ -634,6 +634,16 @@ def conversation_masks(
 def DEFAULT_FILTER_FUNCTION(tokens: torch.tensor, **kwargs):
     return True
 
+def ascii_only_filter(tokens: torch.tensor, **kwargs):
+    """Filter function that excludes non-ASCII tokens."""
+    tokenizer = kwargs.get("tokenizer", None)
+    if tokenizer is None:
+        raise ValueError("Tokenizer required for ASCII-only filtering")
+
+    nonascii_toks = get_nonascii_toks(tokenizer, device=tokens.device)
+    # Return False if any token is in the non-ASCII set
+    return not any(tok.item() in nonascii_toks for tok in tokens)
+
 INITIAL_PREFIX_LENGTH = 40
 INITIAL_SUFFIX_LENGTH = 40
 DEFAULT_INIT_TOKEN = " And"
@@ -654,20 +664,23 @@ def initialize_adversarial_strings(tokenizer: transformers.AutoTokenizer, init_c
         except KeyError:
             pass
 
+        # Check if ASCII-only mode is requested
+        ascii_only = init_config.get("ascii_only", False)
+
         try:
             prefix_filter: typing.Callable[..., bool] = init_config["prefix_filter"]
         except KeyError:
-            prefix_filter = DEFAULT_FILTER_FUNCTION
-        
+            prefix_filter = ascii_only_filter if ascii_only else DEFAULT_FILTER_FUNCTION
+
         try:
             suffix_filter: typing.Callable[..., bool] = init_config["suffix_filter"]
         except KeyError:
-            suffix_filter = DEFAULT_FILTER_FUNCTION
-        
+            suffix_filter = ascii_only_filter if ascii_only else DEFAULT_FILTER_FUNCTION
+
         try:
             filter_metadata = init_config["filter_metadata"]
         except KeyError:
-            filter_metadata = None
+            filter_metadata = {"tokenizer": tokenizer} if ascii_only else None
 
         try:
             prefix_length = init_config["prefix_length"]
