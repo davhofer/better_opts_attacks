@@ -20,20 +20,20 @@ def check_argmax_match(
     tokenizer: transformers.AutoTokenizer,
     current_tokens: torch.Tensor,
     masks_data: typing.Dict[str, torch.Tensor],
-    target_tokens: torch.Tensor
+    target_tokens: torch.Tensor,
 ) -> bool:
     """Check if argmax of logits matches target tokens."""
     with torch.no_grad():
         # Get logits for the current tokens
         logits = model(current_tokens.unsqueeze(0).to(model.device)).logits[0]
-        
+
         # Get predictions at target positions (shift by 1 for causal LM)
         target_mask = masks_data["target_mask"]
         pred_logits = logits[target_mask - 1]
-        
+
         # Get argmax predictions
         predictions = torch.argmax(pred_logits, dim=-1)
-        
+
         # Check if they match target
         return torch.all(predictions.cpu() == target_tokens.cpu()).item()
 
@@ -41,11 +41,12 @@ def check_argmax_match(
 def check_generation_starts_with_target(
     generated_text: str,
     target_tokens: torch.Tensor,
-    tokenizer: transformers.AutoTokenizer
+    tokenizer: transformers.AutoTokenizer,
 ) -> bool:
     """Check if generation starts with the target text (after stripping whitespace)."""
     target_text = tokenizer.decode(target_tokens)
     return generated_text.strip().startswith(target_text)
+
 
 def og_gcg_signal(
     model: transformers.AutoModelForCausalLM,
@@ -58,7 +59,7 @@ def og_gcg_signal(
     step_num,
     clamp_tokens: bool = True,
     ascii_only: bool = False,
-    **kwargs
+    **kwargs,
 ):
     optim_mask: torch.Tensor = masks_data["optim_mask"]
     target_mask: torch.Tensor = masks_data["target_mask"]
@@ -71,19 +72,34 @@ def og_gcg_signal(
     if max_token_id >= vocab_size:
         if clamp_tokens:
             if logger:
-                logger.log(f"WARNING: Token ID {max_token_id} exceeds vocab size {vocab_size}, clamping tokens", event_type="warning")
+                logger.log(
+                    f"WARNING: Token ID {max_token_id} exceeds vocab size {vocab_size}, clamping tokens",
+                    event_type="warning",
+                )
             # Clamp tokens to valid range
-            input_points = input_points.clamp(max=vocab_size-1)
+            input_points = input_points.clamp(max=vocab_size - 1)
         else:
             if logger:
-                logger.log(f"ERROR: Token ID {max_token_id} exceeds vocab size {vocab_size}, but clamping is disabled", event_type="error")
+                logger.log(
+                    f"ERROR: Token ID {max_token_id} exceeds vocab size {vocab_size}, but clamping is disabled",
+                    event_type="error",
+                )
             # Return random indices as fallback
-            return torch.stack([torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])])
+            return torch.stack(
+                [
+                    torch.randperm(vocab_size)[:gcg_topk]
+                    for _ in range(optim_mask.shape[0])
+                ]
+            )
 
-    one_hot_tensor = torch.nn.functional.one_hot(input_points.clone().detach(), num_classes=vocab_size).to(dtype=model.dtype)
+    one_hot_tensor = torch.nn.functional.one_hot(
+        input_points.clone().detach(), num_classes=vocab_size
+    ).to(dtype=model.dtype)
     one_hot_tensor.requires_grad_()
     embedding_tensor = model.get_input_embeddings().weight
-    inputs_embeds = torch.unsqueeze(one_hot_tensor.to(embedding_tensor.device) @ embedding_tensor, 0)
+    inputs_embeds = torch.unsqueeze(
+        one_hot_tensor.to(embedding_tensor.device) @ embedding_tensor, 0
+    )
 
     # Add NaN check for logits
     logits = model(inputs_embeds=inputs_embeds).logits
@@ -91,16 +107,22 @@ def og_gcg_signal(
         if logger:
             logger.log_event("WARNING: NaN or Inf detected in logits")
         # Return random indices as fallback
-        return torch.stack([torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])])
+        return torch.stack(
+            [torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])]
+        )
 
-    loss_tensor = GCG_LOSS_FUNCTION(logits[0, target_mask - 1, :], input_points[target_mask].to(logits.device)).sum()
+    loss_tensor = GCG_LOSS_FUNCTION(
+        logits[0, target_mask - 1, :], input_points[target_mask].to(logits.device)
+    ).sum()
 
     # Add NaN check for loss
     if torch.isnan(loss_tensor).item():
         if logger:
             logger.log_event("WARNING: NaN detected in loss")
         # Return random indices as fallback
-        return torch.stack([torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])])
+        return torch.stack(
+            [torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])]
+        )
 
     loss_tensor.backward()
 
@@ -109,18 +131,23 @@ def og_gcg_signal(
         if logger:
             logger.log_event("WARNING: NaN detected in gradients")
         # Return random indices as fallback
-        return torch.stack([torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])])
+        return torch.stack(
+            [torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])]
+        )
 
-    grad_optims = - (one_hot_tensor.grad[optim_mask, :])
+    grad_optims = -(one_hot_tensor.grad[optim_mask, :])
 
     # Apply ASCII-only filtering if requested
     if ascii_only:
-        nonascii_toks = attack_utility.get_nonascii_toks(tokenizer, device=grad_optims.device)
+        nonascii_toks = attack_utility.get_nonascii_toks(
+            tokenizer, device=grad_optims.device
+        )
         # Set gradients for non-ASCII tokens to -inf so they won't be selected
-        grad_optims[:, nonascii_toks] = float('-inf')
+        grad_optims[:, nonascii_toks] = float("-inf")
 
     best_tokens_indices = grad_optims.topk(gcg_topk, dim=-1).indices
     return best_tokens_indices
+
 
 def neg_gcg_signal(
     model: transformers.AutoModelForCausalLM,
@@ -132,7 +159,7 @@ def neg_gcg_signal(
     *,
     clamp_tokens: bool = True,
     ascii_only: bool = False,
-    **kwargs
+    **kwargs,
 ):
     optim_mask: torch.tensor = masks_data["optim_mask"]
     target_mask: torch.tensor = masks_data["target_mask"]
@@ -145,32 +172,52 @@ def neg_gcg_signal(
     if max_token_id >= vocab_size:
         if clamp_tokens:
             if logger:
-                logger.log(f"WARNING: Token ID {max_token_id} exceeds vocab size {vocab_size}, clamping tokens", event_type="warning")
+                logger.log(
+                    f"WARNING: Token ID {max_token_id} exceeds vocab size {vocab_size}, clamping tokens",
+                    event_type="warning",
+                )
             # Clamp tokens to valid range
-            input_points = input_points.clamp(max=vocab_size-1)
+            input_points = input_points.clamp(max=vocab_size - 1)
         else:
             if logger:
-                logger.log(f"ERROR: Token ID {max_token_id} exceeds vocab size {vocab_size}, but clamping is disabled", event_type="error")
+                logger.log(
+                    f"ERROR: Token ID {max_token_id} exceeds vocab size {vocab_size}, but clamping is disabled",
+                    event_type="error",
+                )
             # Return random indices as fallback
-            return torch.stack([torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])])
+            return torch.stack(
+                [
+                    torch.randperm(vocab_size)[:gcg_topk]
+                    for _ in range(optim_mask.shape[0])
+                ]
+            )
 
-    one_hot_tensor = torch.nn.functional.one_hot(input_points.clone().detach(), num_classes=vocab_size).to(dtype=model.dtype)
+    one_hot_tensor = torch.nn.functional.one_hot(
+        input_points.clone().detach(), num_classes=vocab_size
+    ).to(dtype=model.dtype)
     one_hot_tensor.requires_grad_()
     embedding_tensor = model.get_input_embeddings().weight
-    inputs_embeds = torch.unsqueeze(one_hot_tensor.to(embedding_tensor.device) @ embedding_tensor, 0)
+    inputs_embeds = torch.unsqueeze(
+        one_hot_tensor.to(embedding_tensor.device) @ embedding_tensor, 0
+    )
     logits = model(inputs_embeds=inputs_embeds).logits
-    loss_tensor = GCG_LOSS_FUNCTION(logits[0, target_mask - 1, :], input_points[target_mask].to(logits.device)).sum()
+    loss_tensor = GCG_LOSS_FUNCTION(
+        logits[0, target_mask - 1, :], input_points[target_mask].to(logits.device)
+    ).sum()
     loss_tensor.backward()
-    grad_optims = (one_hot_tensor.grad[optim_mask, :])
+    grad_optims = one_hot_tensor.grad[optim_mask, :]
 
     # Apply ASCII-only filtering if requested
     if ascii_only:
-        nonascii_toks = attack_utility.get_nonascii_toks(tokenizer, device=grad_optims.device)
+        nonascii_toks = attack_utility.get_nonascii_toks(
+            tokenizer, device=grad_optims.device
+        )
         # Set gradients for non-ASCII tokens to -inf so they won't be selected
-        grad_optims[:, nonascii_toks] = float('-inf')
+        grad_optims[:, nonascii_toks] = float("-inf")
 
     best_tokens_indices = grad_optims.topk(gcg_topk, dim=-1).indices
     return best_tokens_indices
+
 
 def rand_gcg_signal(
     model: transformers.AutoModelForCausalLM,
@@ -181,7 +228,7 @@ def rand_gcg_signal(
     logger: experiment_logger.ExperimentLogger,
     *,
     clamp_tokens: bool = True,
-    **kwargs
+    **kwargs,
 ):
     optim_mask: torch.tensor = masks_data["optim_mask"]
 
@@ -190,8 +237,11 @@ def rand_gcg_signal(
 
     # Note: rand_gcg_signal doesn't use input_points, so no need to check for token clamping
     # This is a random signal function
-    best_tokens_indices = torch.stack([torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])])
+    best_tokens_indices = torch.stack(
+        [torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])]
+    )
     return best_tokens_indices
+
 
 def universal_rand_gcg_signal(
     models,
@@ -201,7 +251,7 @@ def universal_rand_gcg_signal(
     logger,
     *,
     clamp_tokens: bool = True,
-    **kwargs
+    **kwargs,
 ):
     optim_mask = input_tokenized_data_list[0]["masks"]["optim_mask"]
 
@@ -210,10 +260,11 @@ def universal_rand_gcg_signal(
 
     # Note: universal_rand_gcg_signal doesn't use input_points, so no need to check for token clamping
     # This is a random signal function
-    best_tokens_indices = torch.stack([torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])])
+    best_tokens_indices = torch.stack(
+        [torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])]
+    )
     return best_tokens_indices
 
-    
 
 @experiment_logger.log_parameters(exclude=["model", "tokenizer"])
 def custom_gcg(
@@ -236,9 +287,10 @@ def custom_gcg(
     enable_enhanced_metrics: bool = False,
     save_metrics_path: typing.Optional[str] = None,
     check_extended_metrics_every_n_steps: int = 10,
-    save_adv_string_every_n_steps: int = 25
+    save_adv_string_every_n_steps: int = 25,
+    # Decode-reencode validation
+    filter_tokenized_sequences: bool = False,
 ):
-
     logger.log(input_tokenized_data)
 
     # Setup enhanced metrics if enabled
@@ -264,8 +316,12 @@ def custom_gcg(
     eval_input_mask: torch.tensor = masks_data["input_mask"]
 
     signal_function = custom_gcg_hyperparams.get("signal_function", og_gcg_signal)
-    true_loss_function = custom_gcg_hyperparams.get("true_loss_function", target_logprobs)
-    substitution_validity_function = custom_gcg_hyperparams.get("substitution_validity_function", None)
+    true_loss_function = custom_gcg_hyperparams.get(
+        "true_loss_function", target_logprobs
+    )
+    substitution_validity_function = custom_gcg_hyperparams.get(
+        "substitution_validity_function", None
+    )
     signal_kwargs = custom_gcg_hyperparams.get("signal_kwargs", None)
     true_loss_kwargs = custom_gcg_hyperparams.get("true_loss_kwargs", None)
 
@@ -274,31 +330,62 @@ def custom_gcg(
     logprobs_sequences = []
     successive_correct_outputs = 0
 
+    # Statistics for decode-reencode validation
+    total_candidates_checked = 0
+    total_candidates_invalid = 0
+
     if true_loss_kwargs is None:
         true_loss_kwargs = {}
     true_loss_kwargs["att_cacher"] = att_cacher
     if eval_initial:
         step_start_time = time.time()
-        initial_true_loss = true_loss_function(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger, **true_loss_kwargs)
+        initial_true_loss = true_loss_function(
+            model,
+            tokenizer,
+            torch.unsqueeze(current_best_tokens, 0),
+            masks_data,
+            input_tokens[target_mask],
+            logger,
+            **true_loss_kwargs,
+        )
         logger.log(initial_true_loss, step_num=-1)
         best_output_sequences.append(current_best_tokens.clone())
         logger.log(current_best_tokens, step_num=-1)
-        initial_logprobs = target_logprobs(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger)
+        initial_logprobs = target_logprobs(
+            model,
+            tokenizer,
+            torch.unsqueeze(current_best_tokens, 0),
+            masks_data,
+            input_tokens[target_mask],
+            logger,
+        )
         initial_logprobs = initial_logprobs.item()
         logger.log(initial_logprobs, step_num=-1)
         logprobs_sequences.append(initial_logprobs)
         input_tokens_for_generation = current_best_tokens[eval_input_mask]
-        generated_output_tokens = model.generate(torch.unsqueeze(input_tokens_for_generation, dim=0).to(model.device), attention_mask=torch.unsqueeze(torch.ones(input_tokens_for_generation.shape), dim=0).to(model.device), **generation_config)
+        generated_output_tokens = model.generate(
+            torch.unsqueeze(input_tokens_for_generation, dim=0).to(model.device),
+            attention_mask=torch.unsqueeze(
+                torch.ones(input_tokens_for_generation.shape), dim=0
+            ).to(model.device),
+            **generation_config,
+        )
         # Get the actual number of input tokens used for generation
         input_length = len(input_tokens_for_generation)
-        generated_output_string = tokenizer.batch_decode(generated_output_tokens[:, input_length:])[0]
+        generated_output_string = tokenizer.batch_decode(
+            generated_output_tokens[:, input_length:]
+        )[0]
         logger.log(generated_output_string, step_num=-1)
-        
+
         # Extended metrics for initial state (only if enhanced metrics enabled)
         if enable_enhanced_metrics and save_metrics_path:
             target_tokens = input_tokens[target_mask]
-            argmax_matches = check_argmax_match(model, tokenizer, current_best_tokens, masks_data, target_tokens)
-            starts_with_target = check_generation_starts_with_target(generated_output_string, target_tokens, tokenizer)
+            argmax_matches = check_argmax_match(
+                model, tokenizer, current_best_tokens, masks_data, target_tokens
+            )
+            starts_with_target = check_generation_starts_with_target(
+                generated_output_string, target_tokens, tokenizer
+            )
 
             initial_metric = {
                 "step": -1,
@@ -306,11 +393,11 @@ def custom_gcg(
                 "argmax_matches_target": argmax_matches,
                 "generation_starts_with_target": starts_with_target,
                 "generated_text": generated_output_string[:100],
-                "time_elapsed": time.time() - step_start_time
+                "time_elapsed": time.time() - step_start_time,
             }
             per_step_metrics.append(initial_metric)
-            with open(metrics_file, 'w') as f:
-                f.write(json.dumps(initial_metric) + '\n')
+            with open(metrics_file, "w") as f:
+                f.write(json.dumps(initial_metric) + "\n")
 
     step_num = 0
 
@@ -323,16 +410,29 @@ def custom_gcg(
     generated_output_string_chunk = []
 
     # Create progress bar for optimization steps
-    pbar = tqdm(range(custom_gcg_hyperparams["max_steps"]),
-                desc="GCG Optimization",
-                unit="step",
-                disable=False)
+    pbar = tqdm(
+        range(custom_gcg_hyperparams["max_steps"]),
+        desc="GCG Optimization",
+        unit="step",
+        disable=False,
+    )
 
     for step_num in pbar:
         step_start_time = time.time()
 
-        best_tokens_indices = signal_function(model, tokenizer, current_best_tokens, masks_data, custom_gcg_hyperparams["topk"], logger, step_num=step_num, clamp_tokens=clamp_tokens, ascii_only=ascii_only, **(signal_kwargs or {}))
-        
+        best_tokens_indices = signal_function(
+            model,
+            tokenizer,
+            current_best_tokens,
+            masks_data,
+            custom_gcg_hyperparams["topk"],
+            logger,
+            step_num=step_num,
+            clamp_tokens=clamp_tokens,
+            ascii_only=ascii_only,
+            **(signal_kwargs or {}),
+        )
+
         indices_to_sample = set()
         indices_to_exclude = set()
         substitutions_set = set()
@@ -342,22 +442,42 @@ def custom_gcg(
                 for first_coordinate in range(best_tokens_indices.shape[0]):
                     for second_coordinate in range(best_tokens_indices.shape[1]):
                         substitution_make = current_best_tokens.clone()
-                        substitution_make[optim_mask[first_coordinate]] = best_tokens_indices[(first_coordinate, second_coordinate)]
+                        substitution_make[optim_mask[first_coordinate]] = (
+                            best_tokens_indices[(first_coordinate, second_coordinate)]
+                        )
                         substitutions_set.add(substitution_make)
                 substitution_data = torch.stack(list(substitutions_set))
         else:
-            assert isinstance(custom_gcg_hyperparams["forward_eval_candidates"], int), "Only strings or ints"
+            assert isinstance(custom_gcg_hyperparams["forward_eval_candidates"], int), (
+                "Only strings or ints"
+            )
             num_forward_evals = custom_gcg_hyperparams["forward_eval_candidates"]
             while len(indices_to_sample) < num_forward_evals:
-                first_coordinate = torch.randint(0, best_tokens_indices.shape[0], (1,)).to(torch.int32).item()
-                second_coordinate = torch.randint(0, best_tokens_indices.shape[1], (1,)).to(torch.int32).item()
+                first_coordinate = (
+                    torch.randint(0, best_tokens_indices.shape[0], (1,))
+                    .to(torch.int32)
+                    .item()
+                )
+                second_coordinate = (
+                    torch.randint(0, best_tokens_indices.shape[1], (1,))
+                    .to(torch.int32)
+                    .item()
+                )
                 if (first_coordinate, second_coordinate) in indices_to_sample:
                     continue
                 if (first_coordinate, second_coordinate) in indices_to_exclude:
                     continue
                 random_substitution_make = current_best_tokens.clone()
-                random_substitution_make[optim_mask[first_coordinate]] = best_tokens_indices[(first_coordinate, second_coordinate)]
-                if (substitution_validity_function is None) or (substitution_validity_function(random_substitution_make, tokenizer=tokenizer, masks_data=masks_data)):
+                random_substitution_make[optim_mask[first_coordinate]] = (
+                    best_tokens_indices[(first_coordinate, second_coordinate)]
+                )
+                if (substitution_validity_function is None) or (
+                    substitution_validity_function(
+                        random_substitution_make,
+                        tokenizer=tokenizer,
+                        masks_data=masks_data,
+                    )
+                ):
                     indices_to_sample.add((first_coordinate, second_coordinate))
                     substitutions_set.add(random_substitution_make)
                 else:
@@ -366,68 +486,141 @@ def custom_gcg(
                     indices_to_exclude.add((first_coordinate, second_coordinate))
             substitution_data = torch.stack(list(substitutions_set))
 
-
         del best_tokens_indices
         gc.collect()
         torch.cuda.empty_cache()
         substitution_data_chunk.append(substitution_data)
-        
 
-        true_losses = true_loss_function(model, tokenizer, substitution_data, masks_data, input_tokens[target_mask], logger, **true_loss_kwargs)
+        true_losses = true_loss_function(
+            model,
+            tokenizer,
+            substitution_data,
+            masks_data,
+            input_tokens[target_mask],
+            logger,
+            **true_loss_kwargs,
+        )
+
+        # Decode-reencode validation: filter out candidates that change during tokenization cycle
+        if filter_tokenized_sequences:
+            valid_mask = torch.ones(len(substitution_data), dtype=torch.bool)
+
+            for idx, candidate_tokens in enumerate(substitution_data):
+                # Decode full sequence
+                decoded_text = tokenizer.decode(
+                    candidate_tokens.cpu(), skip_special_tokens=False
+                )
+
+                # Re-encode
+                reencoded_tokens = tokenizer.encode(
+                    decoded_text, return_tensors="pt", add_special_tokens=False
+                )[0]
+
+                # Check if tokenization is preserved
+                if not torch.equal(candidate_tokens.cpu(), reencoded_tokens.cpu()):
+                    valid_mask[idx] = False
+                    # Set loss to infinity so it won't be selected
+                    true_losses[idx] = float("inf")
+
+            # Update statistics
+            num_invalid = (~valid_mask).sum().item()
+            total_candidates_checked += len(substitution_data)
+            total_candidates_invalid += num_invalid
+
+            if num_invalid > 0:
+                logger.log(
+                    f"Step {step_num}: Filtered {num_invalid}/{len(substitution_data)} candidates due to decode-reencode mismatch",
+                    step_num=step_num,
+                )
+
+            # Check if all candidates were invalidated
+            if num_invalid == len(substitution_data):
+                logger.log(
+                    f"WARNING Step {step_num}: ALL candidates failed decode-reencode validation! Using best of invalid candidates.",
+                    step_num=step_num,
+                )
+                # In this case, true_losses are all inf, so we'll just use the first candidate
+                # This is a fallback - ideally this shouldn't happen often
+
         true_losses_chunk.append(true_losses)
         current_best_true_loss = true_losses[torch.argmin(true_losses)]
         current_best_true_loss_chunk.append(current_best_true_loss)
         current_best_tokens = substitution_data[torch.argmin(true_losses)].clone()
         current_best_tokens_chunk.append(current_best_tokens)
         best_output_sequences.append(current_best_tokens.clone())
-        logprobs = target_logprobs(model, tokenizer, torch.unsqueeze(current_best_tokens, 0), masks_data, input_tokens[target_mask], logger)
+        logprobs = target_logprobs(
+            model,
+            tokenizer,
+            torch.unsqueeze(current_best_tokens, 0),
+            masks_data,
+            input_tokens[target_mask],
+            logger,
+        )
         logprobs = logprobs.item()
         logprobs_chunk.append(logprobs)
         logprobs_sequences.append(logprobs)
 
         # Update progress bar with current loss
-        pbar.set_postfix({
-            'Loss': f'{logprobs:.4f}',
-            'Best': f'{min(logprobs_sequences):.4f}',
-            'Success': f'{successive_correct_outputs}'
-        })
-        
+        pbar.set_postfix(
+            {
+                "Loss": f"{logprobs:.4f}",
+                "Best": f"{min(logprobs_sequences):.4f}",
+                "Success": f"{successive_correct_outputs}",
+            }
+        )
+
         # Extended metrics collection
         if save_metrics_path:
             target_tokens = input_tokens[target_mask]
-            
+
             # Always check argmax match
-            argmax_matches = check_argmax_match(model, tokenizer, current_best_tokens, masks_data, target_tokens)
-            
+            argmax_matches = check_argmax_match(
+                model, tokenizer, current_best_tokens, masks_data, target_tokens
+            )
+
             # Prepare step metrics
             step_metric = {
                 "step": step_num,
                 "loss": logprobs,
                 "argmax_matches_target": argmax_matches,
-                "time_elapsed": time.time() - step_start_time
+                "time_elapsed": time.time() - step_start_time,
             }
-            
+
             # Check extended metrics periodically (only if enhanced metrics enabled)
-            if enable_enhanced_metrics and step_num % check_extended_metrics_every_n_steps == 0:
+            if (
+                enable_enhanced_metrics
+                and step_num % check_extended_metrics_every_n_steps == 0
+            ):
                 # Generate text for extended checks
                 with torch.no_grad():
                     input_tokens_for_generation = current_best_tokens[eval_input_mask]
                     generated_tokens = model.generate(
-                        torch.unsqueeze(input_tokens_for_generation, dim=0).to(model.device),
-                        attention_mask=torch.unsqueeze(torch.ones(input_tokens_for_generation.shape), dim=0).to(model.device),
-                        **generation_config
+                        torch.unsqueeze(input_tokens_for_generation, dim=0).to(
+                            model.device
+                        ),
+                        attention_mask=torch.unsqueeze(
+                            torch.ones(input_tokens_for_generation.shape), dim=0
+                        ).to(model.device),
+                        **generation_config,
                     )
                     # Get the actual number of input tokens used for generation
                     input_length = len(input_tokens_for_generation)
-                    extended_generated_text = tokenizer.batch_decode(generated_tokens[:, input_length:])[0]
-                
-                starts_with_target = check_generation_starts_with_target(extended_generated_text, target_tokens, tokenizer)
-                
+                    extended_generated_text = tokenizer.batch_decode(
+                        generated_tokens[:, input_length:]
+                    )[0]
+
+                starts_with_target = check_generation_starts_with_target(
+                    extended_generated_text, target_tokens, tokenizer
+                )
+
                 step_metric["generation_starts_with_target"] = starts_with_target
                 step_metric["generated_text"] = extended_generated_text[:100]
-            
+
             # Save adversarial string periodically (only if enhanced metrics enabled)
-            if enable_enhanced_metrics and step_num % save_adv_string_every_n_steps == 0:
+            if (
+                enable_enhanced_metrics
+                and step_num % save_adv_string_every_n_steps == 0
+            ):
                 # Get prefix and suffix tokens separately
                 prefix_tokens = current_best_tokens[masks_data["prefix_mask"]]
                 suffix_tokens = current_best_tokens[masks_data["suffix_mask"]]
@@ -435,56 +628,80 @@ def custom_gcg(
                 prefix_str = tokenizer.decode(prefix_tokens)
                 suffix_str = tokenizer.decode(suffix_tokens)
                 step_metric["current_adv_string"] = f"{prefix_str} . {suffix_str}"
-            
+
             # Save metrics incrementally (only if enhanced metrics enabled)
             if enable_enhanced_metrics:
                 per_step_metrics.append(step_metric)
                 if save_metrics_path:
-                    with open(metrics_file, 'a') as f:
-                        f.write(json.dumps(step_metric) + '\n')
-        
+                    with open(metrics_file, "a") as f:
+                        f.write(json.dumps(step_metric) + "\n")
+
         if eval_every_step:
             input_tokens_for_generation = current_best_tokens[eval_input_mask]
-            generated_output_tokens = model.generate(torch.unsqueeze(input_tokens_for_generation, dim=0).to(model.device), attention_mask=torch.unsqueeze(torch.ones(input_tokens_for_generation.shape), dim=0).to(model.device), **generation_config)
+            generated_output_tokens = model.generate(
+                torch.unsqueeze(input_tokens_for_generation, dim=0).to(model.device),
+                attention_mask=torch.unsqueeze(
+                    torch.ones(input_tokens_for_generation.shape), dim=0
+                ).to(model.device),
+                **generation_config,
+            )
             # Get the actual number of input tokens used for generation
             input_length = len(input_tokens_for_generation)
-            generated_output_string = tokenizer.batch_decode(generated_output_tokens[:, input_length:])[0]
+            generated_output_string = tokenizer.batch_decode(
+                generated_output_tokens[:, input_length:]
+            )[0]
             generated_output_string_chunk.append(generated_output_string)
             if early_stop:
                 # Check if target appears at the beginning of the generated string
-                if check_generation_starts_with_target(generated_output_string, input_tokenized_data["tokens"][target_mask], tokenizer):
+                if check_generation_starts_with_target(
+                    generated_output_string,
+                    input_tokenized_data["tokens"][target_mask],
+                    tokenizer,
+                ):
                     successive_correct_outputs += 1
                     if successive_correct_outputs >= identical_outputs_before_stop:
                         # Update progress bar for early stopping
                         pbar.set_description("GCG Optimization (Early Stop)")
-                        pbar.set_postfix({
-                            'Loss': f'{logprobs:.4f}',
-                            'Best': f'{min(logprobs_sequences):.4f}',
-                            'Success': f'{successive_correct_outputs}',
-                            'Status': 'SUCCESS'
-                        })
+                        pbar.set_postfix(
+                            {
+                                "Loss": f"{logprobs:.4f}",
+                                "Best": f"{min(logprobs_sequences):.4f}",
+                                "Success": f"{successive_correct_outputs}",
+                                "Status": "SUCCESS",
+                            }
+                        )
 
                         # Log early stopping with extended metrics if enabled
-                        if enable_enhanced_metrics and save_metrics_path and "current_adv_string" not in step_metric:
+                        if (
+                            enable_enhanced_metrics
+                            and save_metrics_path
+                            and "current_adv_string" not in step_metric
+                        ):
                             # Add final adversarial string before stopping
-                            prefix_tokens = current_best_tokens[masks_data["prefix_mask"]]
-                            suffix_tokens = current_best_tokens[masks_data["suffix_mask"]]
+                            prefix_tokens = current_best_tokens[
+                                masks_data["prefix_mask"]
+                            ]
+                            suffix_tokens = current_best_tokens[
+                                masks_data["suffix_mask"]
+                            ]
                             prefix_str = tokenizer.decode(prefix_tokens)
                             suffix_str = tokenizer.decode(suffix_tokens)
-                            step_metric["current_adv_string"] = f"{prefix_str} . {suffix_str}"
+                            step_metric["current_adv_string"] = (
+                                f"{prefix_str} . {suffix_str}"
+                            )
                             step_metric["early_stop"] = True
                             # Re-save the metric with early stop indicator
                             per_step_metrics[-1] = step_metric
                             # Rewrite the last line in the file
-                            with open(metrics_file, 'r') as f:
+                            with open(metrics_file, "r") as f:
                                 lines = f.readlines()
-                            lines[-1] = json.dumps(step_metric) + '\n'
-                            with open(metrics_file, 'w') as f:
+                            lines[-1] = json.dumps(step_metric) + "\n"
+                            with open(metrics_file, "w") as f:
                                 f.writelines(lines)
                         break
                 else:
                     successive_correct_outputs = 0
-    
+
         if (step_num + 1) % 10 == 0:
             logger.log(substitution_data_chunk, step_num=step_num)
             logger.log(true_losses_chunk, step_num=step_num)
@@ -506,19 +723,32 @@ def custom_gcg(
     pbar.close()
 
     logger.log(successive_correct_outputs, num_steps=step_num)
-    
+
+    # Log decode-reencode validation statistics
+    if filter_tokenized_sequences and total_candidates_checked > 0:
+        invalid_rate = (total_candidates_invalid / total_candidates_checked) * 100
+        logger.log(f"\n{'=' * 80}")
+        logger.log(f"DECODE-REENCODE VALIDATION STATISTICS:")
+        logger.log(f"{'=' * 80}")
+        logger.log(f"Total candidates checked: {total_candidates_checked}")
+        logger.log(f"Total candidates invalidated: {total_candidates_invalid}")
+        logger.log(f"Invalidation rate: {invalid_rate:.2f}%")
+        logger.log(f"{'=' * 80}\n")
+
     # Return extended results if enhanced metrics were enabled
     if enable_enhanced_metrics:
         return {
             "logprobs_sequences": logprobs_sequences,
             "best_output_sequences": best_output_sequences,
             "per_step_metrics": per_step_metrics,
-            "final_success": successive_correct_outputs >= identical_outputs_before_stop,
-            "total_steps": step_num + 1
+            "final_success": successive_correct_outputs
+            >= identical_outputs_before_stop,
+            "total_steps": step_num + 1,
         }
     else:
         # Maintain backward compatibility - return original format
         return logprobs_sequences, best_output_sequences
+
 
 def average_target_logprobs_signal(
     models: list[transformers.AutoModelForCausalLM],
@@ -528,17 +758,23 @@ def average_target_logprobs_signal(
     logger: experiment_logger.ExperimentLogger,
     *,
     step_num,
-    canonical_device_idx = 0,
-    normalize_grads_before_accumulation = True,
+    canonical_device_idx=0,
+    normalize_grads_before_accumulation=True,
     ascii_only: bool = False,
-    **kwargs
+    **kwargs,
 ):
-    
     num_elements_per_batch = len(input_tokenized_data_list) // len(models)
-    input_tokenized_data_list_batches = [input_tokenized_data_list[x * num_elements_per_batch: (x+1) * num_elements_per_batch] for x in range(len(models))]
+    input_tokenized_data_list_batches = [
+        input_tokenized_data_list[
+            x * num_elements_per_batch : (x + 1) * num_elements_per_batch
+        ]
+        for x in range(len(models))
+    ]
 
     grads_list = []
-    for model, input_tokenized_data_list_batch in zip(models, input_tokenized_data_list_batches):
+    for model, input_tokenized_data_list_batch in zip(
+        models, input_tokenized_data_list_batches
+    ):
         grads_list_batch = []
         for input_tokenized_data in input_tokenized_data_list_batch:
             input_points = input_tokenized_data["tokens"]
@@ -546,7 +782,7 @@ def average_target_logprobs_signal(
 
             optim_mask: torch.Tensor = masks_data["optim_mask"]
             target_mask: torch.Tensor = masks_data["target_mask"]
-            
+
             # Get vocabulary size from embedding layer (modern approach)
             vocab_size = model.get_input_embeddings().weight.shape[0]
 
@@ -555,52 +791,79 @@ def average_target_logprobs_signal(
             if max_token_id >= vocab_size:
                 if clamp_tokens:
                     if logger:
-                        logger.log(f"WARNING: Token ID {max_token_id} exceeds vocab size {vocab_size}, clamping tokens", event_type="warning")
+                        logger.log(
+                            f"WARNING: Token ID {max_token_id} exceeds vocab size {vocab_size}, clamping tokens",
+                            event_type="warning",
+                        )
                     # Clamp tokens to valid range
-                    input_points = input_points.clamp(max=vocab_size-1)
+                    input_points = input_points.clamp(max=vocab_size - 1)
                 else:
                     if logger:
-                        logger.log(f"ERROR: Token ID {max_token_id} exceeds vocab size {vocab_size}, but clamping is disabled", event_type="error")
+                        logger.log(
+                            f"ERROR: Token ID {max_token_id} exceeds vocab size {vocab_size}, but clamping is disabled",
+                            event_type="error",
+                        )
                     # Skip this input and continue with next
                     continue
 
-            one_hot_tensor = torch.nn.functional.one_hot(input_points.clone().detach(), num_classes=vocab_size).to(dtype=model.dtype)
+            one_hot_tensor = torch.nn.functional.one_hot(
+                input_points.clone().detach(), num_classes=vocab_size
+            ).to(dtype=model.dtype)
             one_hot_tensor.requires_grad_()
             embedding_tensor = model.get_input_embeddings().weight
-            inputs_embeds = torch.unsqueeze(one_hot_tensor.to(embedding_tensor.device) @ embedding_tensor, 0)
+            inputs_embeds = torch.unsqueeze(
+                one_hot_tensor.to(embedding_tensor.device) @ embedding_tensor, 0
+            )
             logits = model(inputs_embeds=inputs_embeds).logits
-            loss_tensor = GCG_LOSS_FUNCTION(logits[0, target_mask - 1, :], input_points[target_mask].to(logits.device)).sum()
+            loss_tensor = GCG_LOSS_FUNCTION(
+                logits[0, target_mask - 1, :],
+                input_points[target_mask].to(logits.device),
+            ).sum()
             loss_tensor.backward()
             if normalize_grads_before_accumulation:
-                normalized_grad = one_hot_tensor.grad[optim_mask, :] / one_hot_tensor.grad[optim_mask, :].norm(dim=-1, keepdim=True)
+                normalized_grad = one_hot_tensor.grad[
+                    optim_mask, :
+                ] / one_hot_tensor.grad[optim_mask, :].norm(dim=-1, keepdim=True)
                 grads_list_batch.append(normalized_grad)
             else:
-                grads_list_batch.append(one_hot_tensor.grad[optim_mask, :])    
+                grads_list_batch.append(one_hot_tensor.grad[optim_mask, :])
         grads_list.append(torch.stack(grads_list_batch))
-    
+
     device_moved_grad_list = []
     for grads_list_batch_tensor in grads_list:
         device_moved_grad_list.append(grads_list_batch_tensor.to(canonical_device_idx))
 
-    final_grads = - torch.cat(device_moved_grad_list, dim=0).mean(dim=0)
+    final_grads = -torch.cat(device_moved_grad_list, dim=0).mean(dim=0)
 
     # Apply ASCII-only filtering if requested
     if ascii_only:
-        nonascii_toks = attack_utility.get_nonascii_toks(tokenizer, device=final_grads.device)
+        nonascii_toks = attack_utility.get_nonascii_toks(
+            tokenizer, device=final_grads.device
+        )
         # Set gradients for non-ASCII tokens to -inf so they won't be selected
-        final_grads[:, nonascii_toks] = float('-inf')
+        final_grads[:, nonascii_toks] = float("-inf")
 
     best_tokens_indices = final_grads.topk(gcg_topk, dim=-1).indices
     return best_tokens_indices
 
-def DEFAULT_GCG_RANDOMNESS_STRATEGY(tokenizer, best_tokens_indices, input_tokenized_data_list, substitution_validity_function, max_candidate_size):
-    
+
+def DEFAULT_GCG_RANDOMNESS_STRATEGY(
+    tokenizer,
+    best_tokens_indices,
+    input_tokenized_data_list,
+    substitution_validity_function,
+    max_candidate_size,
+):
     indices_to_sample = set()
     indices_to_exclude = set()
 
     while len(indices_to_sample) < max_candidate_size:
-        first_coordinate = torch.randint(0, best_tokens_indices.shape[0], (1,)).to(torch.int32).item()
-        second_coordinate = torch.randint(0, best_tokens_indices.shape[1], (1,)).to(torch.int32).item()
+        first_coordinate = (
+            torch.randint(0, best_tokens_indices.shape[0], (1,)).to(torch.int32).item()
+        )
+        second_coordinate = (
+            torch.randint(0, best_tokens_indices.shape[1], (1,)).to(torch.int32).item()
+        )
         if (first_coordinate, second_coordinate) in indices_to_sample:
             continue
         if (first_coordinate, second_coordinate) in indices_to_exclude:
@@ -610,10 +873,16 @@ def DEFAULT_GCG_RANDOMNESS_STRATEGY(tokenizer, best_tokens_indices, input_tokeni
         for input_tokenized_data in input_tokenized_data_list:
             masks_data = input_tokenized_data["masks"]
             optim_mask = masks_data["optim_mask"]
-            random_substitution_make = input_tokenized_data["tokens"].clone()  
-            random_substitution_make[optim_mask[first_coordinate]] = best_tokens_indices[(first_coordinate, second_coordinate)]
+            random_substitution_make = input_tokenized_data["tokens"].clone()
+            random_substitution_make[optim_mask[first_coordinate]] = (
+                best_tokens_indices[(first_coordinate, second_coordinate)]
+            )
 
-            if (substitution_validity_function is None) or (substitution_validity_function(random_substitution_make, tokenizer=tokenizer, masks_data=masks_data)):
+            if (substitution_validity_function is None) or (
+                substitution_validity_function(
+                    random_substitution_make, tokenizer=tokenizer, masks_data=masks_data
+                )
+            ):
                 pass
             else:
                 # SUBSTITUTION_INVALID_STRING = "substitution_invalid"
@@ -621,27 +890,31 @@ def DEFAULT_GCG_RANDOMNESS_STRATEGY(tokenizer, best_tokens_indices, input_tokeni
                 indices_to_exclude.add((first_coordinate, second_coordinate))
                 all_substitutions_valid = False
                 break
-        
+
         if not all_substitutions_valid:
             continue
         else:
             indices_to_sample.add((first_coordinate, second_coordinate))
-    
+
     candidates_list = []
     for input_tokenized_data in input_tokenized_data_list:
         input_new_candidates = []
         for index_to_sample in indices_to_sample:
             masks_data = input_tokenized_data["masks"]
             optim_mask = masks_data["optim_mask"]
-            random_substitution_make = input_tokenized_data["tokens"].clone()  
-            random_substitution_make[optim_mask[index_to_sample[0]]] = best_tokens_indices[(index_to_sample[0], index_to_sample[1])]
+            random_substitution_make = input_tokenized_data["tokens"].clone()
+            random_substitution_make[optim_mask[index_to_sample[0]]] = (
+                best_tokens_indices[(index_to_sample[0], index_to_sample[1])]
+            )
             input_new_candidates.append(random_substitution_make)
         candidates_list.append(torch.stack(input_new_candidates))
-    
+
     return candidates_list
+
 
 def DEFAULT_ON_STEP(*args, **kwargs):
     pass
+
 
 @experiment_logger.log_parameters(exclude=["models", "tokenizer"])
 def weakly_universal_gcg(
@@ -656,7 +929,7 @@ def weakly_universal_gcg(
     to_cache_logits,
     to_cache_attentions,
     clamp_tokens: bool = True,
-    ascii_only: bool = False
+    ascii_only: bool = False,
 ):
     logger.log(input_tokenized_data_list)
 
@@ -670,13 +943,21 @@ def weakly_universal_gcg(
         # att_cacher = attack_utility.CachedAverageBulkForward()
     else:
         raise ValueError(f"Just cache ffs. Or write your own implementation.")
-    
-    signal_function = universal_gcg_hyperparameters.get("signal_function", average_target_logprobs_signal)
-    true_loss_function = universal_gcg_hyperparameters.get("true_loss_function", average_target_logprobs)
-    substitution_validity_function = universal_gcg_hyperparameters.get("substitution_validity_function", None)
+
+    signal_function = universal_gcg_hyperparameters.get(
+        "signal_function", average_target_logprobs_signal
+    )
+    true_loss_function = universal_gcg_hyperparameters.get(
+        "true_loss_function", average_target_logprobs
+    )
+    substitution_validity_function = universal_gcg_hyperparameters.get(
+        "substitution_validity_function", None
+    )
     signal_kwargs = universal_gcg_hyperparameters.get("signal_kwargs", None)
     true_loss_kwargs = universal_gcg_hyperparameters.get("true_loss_kwargs", None)
-    randomness_strategy = universal_gcg_hyperparameters.get("randomness_strategy", DEFAULT_GCG_RANDOMNESS_STRATEGY)
+    randomness_strategy = universal_gcg_hyperparameters.get(
+        "randomness_strategy", DEFAULT_GCG_RANDOMNESS_STRATEGY
+    )
 
     on_step_begin = universal_gcg_hyperparameters.get("on_step_begin", DEFAULT_ON_STEP)
     on_step_begin_kwargs = universal_gcg_hyperparameters.get("on_step_begin_kwargs", {})
@@ -693,56 +974,117 @@ def weakly_universal_gcg(
     masks_data_list = [x["masks"] for x in input_tokenized_data_list]
 
     if eval_initial:
-        initial_true_loss = true_loss_function(models, tokenizer, [torch.unsqueeze(x["tokens"], 0) for x in input_tokenized_data_list], masks_data_list, logger, **true_loss_kwargs)
+        initial_true_loss = true_loss_function(
+            models,
+            tokenizer,
+            [torch.unsqueeze(x["tokens"], 0) for x in input_tokenized_data_list],
+            masks_data_list,
+            logger,
+            **true_loss_kwargs,
+        )
         logger.log(initial_true_loss, step_num=-1)
-        initial_average_logprobs = average_target_logprobs(models, tokenizer, [torch.unsqueeze(x["tokens"], 0) for x in input_tokenized_data_list], masks_data_list, logger)
+        initial_average_logprobs = average_target_logprobs(
+            models,
+            tokenizer,
+            [torch.unsqueeze(x["tokens"], 0) for x in input_tokenized_data_list],
+            masks_data_list,
+            logger,
+        )
         initial_average_logprobs = initial_average_logprobs.item()
         logger.log(initial_average_logprobs, step_num=-1)
         average_logprobs_list.append(initial_average_logprobs)
-        best_tokens_dicts_list.append(attack_utility.form_best_tokens_dict(input_tokenized_data_list))
+        best_tokens_dicts_list.append(
+            attack_utility.form_best_tokens_dict(input_tokenized_data_list)
+        )
 
     best_tokens_dicts_chunk = []
     true_losses_chunk = []
     current_best_true_loss_chunk = []
     logprobs_chunk = []
 
-
     current_input_tokenized_data_list = input_tokenized_data_list
 
     # Create progress bar for universal optimization steps
-    pbar = tqdm(range(universal_gcg_hyperparameters["max_steps"]),
-                desc="Universal GCG Optimization",
-                unit="step",
-                disable=False)
+    pbar = tqdm(
+        range(universal_gcg_hyperparameters["max_steps"]),
+        desc="Universal GCG Optimization",
+        unit="step",
+        disable=False,
+    )
 
     for step_num in pbar:
+        step_begin_state = on_step_begin(
+            models,
+            tokenizer,
+            current_input_tokenized_data_list,
+            universal_gcg_hyperparameters,
+            logger,
+            step_num=step_num,
+            **on_step_begin_kwargs,
+        )
 
-        step_begin_state = on_step_begin(models, tokenizer, current_input_tokenized_data_list, universal_gcg_hyperparameters, logger, step_num=step_num, **on_step_begin_kwargs)
-
-        best_tokens_indices = signal_function(models, tokenizer, current_input_tokenized_data_list, universal_gcg_hyperparameters["topk"], logger, step_num=step_num, clamp_tokens=clamp_tokens, ascii_only=ascii_only, **(signal_kwargs or {}))
-        forward_eval_candidates = randomness_strategy(tokenizer, best_tokens_indices, current_input_tokenized_data_list, substitution_validity_function, universal_gcg_hyperparameters["forward_eval_candidates"])
-        true_losses = true_loss_function(models, tokenizer, forward_eval_candidates, masks_data_list, logger, step_num=step_num, **(true_loss_kwargs or {}))
+        best_tokens_indices = signal_function(
+            models,
+            tokenizer,
+            current_input_tokenized_data_list,
+            universal_gcg_hyperparameters["topk"],
+            logger,
+            step_num=step_num,
+            clamp_tokens=clamp_tokens,
+            ascii_only=ascii_only,
+            **(signal_kwargs or {}),
+        )
+        forward_eval_candidates = randomness_strategy(
+            tokenizer,
+            best_tokens_indices,
+            current_input_tokenized_data_list,
+            substitution_validity_function,
+            universal_gcg_hyperparameters["forward_eval_candidates"],
+        )
+        true_losses = true_loss_function(
+            models,
+            tokenizer,
+            forward_eval_candidates,
+            masks_data_list,
+            logger,
+            step_num=step_num,
+            **(true_loss_kwargs or {}),
+        )
         true_losses_chunk.append(true_losses)
         best_idx = torch.argmin(true_losses)
         best_loss = true_losses[best_idx]
         current_best_true_loss_chunk.append(best_loss)
         best_tokens_dict = {
-            "prefix_tokens": forward_eval_candidates[0][best_idx][masks_data_list[0]["prefix_mask"]],
-            "suffix_tokens": forward_eval_candidates[0][best_idx][masks_data_list[0]["suffix_mask"]]
+            "prefix_tokens": forward_eval_candidates[0][best_idx][
+                masks_data_list[0]["prefix_mask"]
+            ],
+            "suffix_tokens": forward_eval_candidates[0][best_idx][
+                masks_data_list[0]["suffix_mask"]
+            ],
         }
         best_tokens_dicts_chunk.append(best_tokens_dict)
         best_tokens_dicts_list.append(best_tokens_dict)
-        average_logprobs = average_target_logprobs(models, tokenizer, [torch.unsqueeze(x[best_idx], 0) for x in forward_eval_candidates], masks_data_list, logger)
+        average_logprobs = average_target_logprobs(
+            models,
+            tokenizer,
+            [torch.unsqueeze(x[best_idx], 0) for x in forward_eval_candidates],
+            masks_data_list,
+            logger,
+        )
         logprobs_chunk.append(average_logprobs.item())
         average_logprobs_list.append(average_logprobs.item())
-        current_input_tokenized_data_list = attack_utility.update_all_tokens(best_tokens_dict, current_input_tokenized_data_list)
+        current_input_tokenized_data_list = attack_utility.update_all_tokens(
+            best_tokens_dict, current_input_tokenized_data_list
+        )
 
         # Update progress bar with current loss
-        pbar.set_postfix({
-            'Loss': f'{best_loss:.4f}',
-            'Avg_Loss': f'{average_logprobs.item():.4f}',
-            'Best': f'{min(average_logprobs_list):.4f}'
-        })
+        pbar.set_postfix(
+            {
+                "Loss": f"{best_loss:.4f}",
+                "Avg_Loss": f"{average_logprobs.item():.4f}",
+                "Best": f"{min(average_logprobs_list):.4f}",
+            }
+        )
 
         if (step_num + 1) % 10 == 0:
             logger.log(true_losses_chunk, step_num=step_num)
@@ -754,8 +1096,16 @@ def weakly_universal_gcg(
             current_best_true_loss_chunk = []
             logprobs_chunk = []
             best_tokens_dicts_chunk = []
-        
-        step_end_state = on_step_end(models, tokenizer, current_input_tokenized_data_list, universal_gcg_hyperparameters, logger, step_num=step_num, **on_step_end_kwargs)
+
+        step_end_state = on_step_end(
+            models,
+            tokenizer,
+            current_input_tokenized_data_list,
+            universal_gcg_hyperparameters,
+            logger,
+            step_num=step_num,
+            **on_step_end_kwargs,
+        )
 
         gc.collect()
         torch.cuda.empty_cache()
