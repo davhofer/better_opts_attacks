@@ -692,24 +692,43 @@ def initialize_adversarial_strings(tokenizer: transformers.AutoTokenizer, init_c
         except KeyError:
             suffix_length = INITIAL_SUFFIX_LENGTH
 
-        while True:
-            prefix_random_tokens = []
-            for _ in range(prefix_length):
-                rand_token = random.randint(0, tokenizer.vocab_size)
-                prefix_random_tokens.append(rand_token)
-            prefix_random_tokens = torch.tensor(prefix_random_tokens)
-            if prefix_filter(prefix_random_tokens, **(filter_metadata or {})):
-                break
-        
-        while True:
-            suffix_random_tokens = []
-            for _ in range(suffix_length):
-                rand_token = random.randint(0, tokenizer.vocab_size)
-                suffix_random_tokens.append(rand_token)
-            suffix_random_tokens = torch.tensor(suffix_random_tokens)
-            if suffix_filter(suffix_random_tokens, **(filter_metadata or {})):
-                break
-        
+        # If ASCII-only mode, generate tokens directly from ASCII set
+        if ascii_only:
+            # Build ASCII-only token list
+            ascii_toks = []
+            for i in range(tokenizer.vocab_size):
+                tok_str = tokenizer.decode([i])
+                if tok_str.isascii() and tok_str.isprintable():
+                    ascii_toks.append(i)
+
+            if len(ascii_toks) == 0:
+                raise ValueError("No ASCII tokens found in tokenizer vocabulary!")
+
+            # Generate prefix tokens from ASCII-only set
+            prefix_random_tokens = torch.tensor([random.choice(ascii_toks) for _ in range(prefix_length)])
+
+            # Generate suffix tokens from ASCII-only set
+            suffix_random_tokens = torch.tensor([random.choice(ascii_toks) for _ in range(suffix_length)])
+        else:
+            # Original random generation logic with filtering
+            while True:
+                prefix_random_tokens = []
+                for _ in range(prefix_length):
+                    rand_token = random.randint(0, tokenizer.vocab_size)
+                    prefix_random_tokens.append(rand_token)
+                prefix_random_tokens = torch.tensor(prefix_random_tokens)
+                if prefix_filter(prefix_random_tokens, **(filter_metadata or {})):
+                    break
+
+            while True:
+                suffix_random_tokens = []
+                for _ in range(suffix_length):
+                    rand_token = random.randint(0, tokenizer.vocab_size)
+                    suffix_random_tokens.append(rand_token)
+                suffix_random_tokens = torch.tensor(suffix_random_tokens)
+                if suffix_filter(suffix_random_tokens, **(filter_metadata or {})):
+                    break
+
         adv_prefix_init = tokenizer.decode(prefix_random_tokens)
         adv_suffix_init = tokenizer.decode(suffix_random_tokens)
 
