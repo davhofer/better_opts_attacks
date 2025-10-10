@@ -631,8 +631,47 @@ def conversation_masks(
         }
     }
 
+def get_special_toks(tokenizer, device="cpu"):
+    """
+    Get a list of special token IDs from the tokenizer.
+
+    This includes:
+    - BOS (beginning of sequence) token
+    - EOS (end of sequence) token
+    - PAD (padding) token
+    - UNK (unknown) token
+
+    Args:
+        tokenizer: HuggingFace tokenizer
+        device: Device to place the tensor on
+
+    Returns:
+        Tensor of special token IDs that should be excluded from optimization
+    """
+    special_toks = []
+    if tokenizer.bos_token_id is not None:
+        special_toks.append(tokenizer.bos_token_id)
+    if tokenizer.eos_token_id is not None:
+        special_toks.append(tokenizer.eos_token_id)
+    if tokenizer.pad_token_id is not None:
+        special_toks.append(tokenizer.pad_token_id)
+    if tokenizer.unk_token_id is not None:
+        special_toks.append(tokenizer.unk_token_id)
+
+    return torch.tensor(special_toks, device=device)
+
+
 def DEFAULT_FILTER_FUNCTION(tokens: torch.tensor, **kwargs):
-    return True
+    """Default filter that excludes only special tokens (BOS, EOS, PAD, UNK)."""
+    tokenizer = kwargs.get("tokenizer", None)
+    if tokenizer is None:
+        # If no tokenizer provided, accept all tokens
+        return True
+
+    special_toks = get_special_toks(tokenizer, device=tokens.device)
+    # Return False if any token is a special token
+    return not any(tok.item() in special_toks for tok in tokens)
+
 
 def ascii_only_filter(tokens: torch.tensor, **kwargs):
     """Filter function that excludes non-ASCII tokens."""
@@ -680,7 +719,8 @@ def initialize_adversarial_strings(tokenizer: transformers.AutoTokenizer, init_c
         try:
             filter_metadata = init_config["filter_metadata"]
         except KeyError:
-            filter_metadata = {"tokenizer": tokenizer} if ascii_only else None
+            # Always pass tokenizer so DEFAULT_FILTER_FUNCTION can exclude special tokens
+            filter_metadata = {"tokenizer": tokenizer}
 
         try:
             prefix_length = init_config["prefix_length"]

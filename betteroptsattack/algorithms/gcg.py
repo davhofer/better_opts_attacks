@@ -137,7 +137,12 @@ def og_gcg_signal(
 
     grad_optims = -(one_hot_tensor.grad[optim_mask, :])
 
-    # Apply ASCII-only filtering if requested
+    # Always exclude special tokens from being selected
+    special_toks = attack_utility.get_special_toks(tokenizer, device=grad_optims.device)
+    if len(special_toks) > 0:
+        grad_optims[:, special_toks] = float("-inf")
+
+    # Apply ASCII-only filtering if requested (in addition to special token filtering)
     if ascii_only:
         nonascii_toks = attack_utility.get_nonascii_toks(
             tokenizer, device=grad_optims.device
@@ -207,7 +212,12 @@ def neg_gcg_signal(
     loss_tensor.backward()
     grad_optims = one_hot_tensor.grad[optim_mask, :]
 
-    # Apply ASCII-only filtering if requested
+    # Always exclude special tokens from being selected
+    special_toks = attack_utility.get_special_toks(tokenizer, device=grad_optims.device)
+    if len(special_toks) > 0:
+        grad_optims[:, special_toks] = float("-inf")
+
+    # Apply ASCII-only filtering if requested (in addition to special token filtering)
     if ascii_only:
         nonascii_toks = attack_utility.get_nonascii_toks(
             tokenizer, device=grad_optims.device
@@ -835,7 +845,12 @@ def average_target_logprobs_signal(
 
     final_grads = -torch.cat(device_moved_grad_list, dim=0).mean(dim=0)
 
-    # Apply ASCII-only filtering if requested
+    # Always exclude special tokens from being selected
+    special_toks = attack_utility.get_special_toks(tokenizer, device=final_grads.device)
+    if len(special_toks) > 0:
+        final_grads[:, special_toks] = float("-inf")
+
+    # Apply ASCII-only filtering if requested (in addition to special token filtering)
     if ascii_only:
         nonascii_toks = attack_utility.get_nonascii_toks(
             tokenizer, device=final_grads.device
