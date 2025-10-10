@@ -48,6 +48,16 @@ def check_generation_starts_with_target(
     return generated_text.strip().startswith(target_text)
 
 
+def check_generation_equals_target_exactly(
+    generated_text: str,
+    target_tokens: torch.Tensor,
+    tokenizer: transformers.AutoTokenizer,
+) -> bool:
+    """Check if generation equals the target text exactly (after stripping whitespace)."""
+    target_text = tokenizer.decode(target_tokens)
+    return generated_text.strip() == target_text.strip()
+
+
 def og_gcg_signal(
     model: transformers.AutoModelForCausalLM,
     tokenizer: transformers.AutoTokenizer,
@@ -300,6 +310,9 @@ def custom_gcg(
     save_adv_string_every_n_steps: int = 25,
     # Decode-reencode validation
     filter_tokenized_sequences: bool = False,
+    # Exact target only mode: optimize to make model produce ONLY the target string followed by EOS token
+    # (instead of just starting with the target string)
+    exact_target_only: bool = False,
 ):
     logger.log(input_tokenized_data)
 
@@ -324,6 +337,43 @@ def custom_gcg(
     optim_mask: torch.tensor = masks_data["optim_mask"]
     target_mask: torch.tensor = masks_data["target_mask"]
     eval_input_mask: torch.tensor = masks_data["input_mask"]
+
+    # Handle exact_target_only mode: extend target to include EOS token
+    if exact_target_only:
+        # Store original target tokens (without EOS)
+        original_target_tokens = input_tokens[target_mask].clone()
+
+        # Extend target mask to include EOS position
+        eos_position = target_mask[-1] + 1
+        target_mask_extended = torch.cat([
+            target_mask,
+            torch.tensor([eos_position], device=target_mask.device, dtype=target_mask.dtype)
+        ])
+
+        # Extend input_tokens to include EOS at the appropriate position
+        # We need to insert EOS token at the position after the last target token
+        # First, ensure input_tokens is long enough
+        if eos_position >= len(input_tokens):
+            # Pad input_tokens if necessary (shouldn't normally happen)
+            padding_needed = eos_position - len(input_tokens) + 1
+            input_tokens = torch.cat([
+                input_tokens,
+                torch.full((padding_needed,), tokenizer.pad_token_id or 0,
+                          device=input_tokens.device, dtype=input_tokens.dtype)
+            ])
+
+        # Set the EOS token at the appropriate position
+        input_tokens[eos_position] = tokenizer.eos_token_id
+
+        # Update the target mask to use the extended version
+        target_mask = target_mask_extended
+
+        logger.log(
+            f"exact_target_only enabled: Extended target to include EOS token at position {eos_position}",
+            event_type="info"
+        )
+    else:
+        original_target_tokens = input_tokens[target_mask].clone()
 
     signal_function = custom_gcg_hyperparams.get("signal_function", og_gcg_signal)
     true_loss_function = custom_gcg_hyperparams.get(
@@ -662,12 +712,23 @@ def custom_gcg(
             )[0]
             generated_output_string_chunk.append(generated_output_string)
             if early_stop:
-                # Check if target appears at the beginning of the generated string
-                if check_generation_starts_with_target(
-                    generated_output_string,
-                    input_tokenized_data["tokens"][target_mask],
-                    tokenizer,
-                ):
+                # Choose validation function based on exact_target_only mode
+                if exact_target_only:
+                    # In exact_target_only mode, require exact match
+                    target_match = check_generation_equals_target_exactly(
+                        generated_output_string,
+                        original_target_tokens,  # Use original target without EOS
+                        tokenizer,
+                    )
+                else:
+                    # In normal mode, check if target appears at the beginning
+                    target_match = check_generation_starts_with_target(
+                        generated_output_string,
+                        input_tokenized_data["tokens"][target_mask],
+                        tokenizer,
+                    )
+
+                if target_match:
                     successive_correct_outputs += 1
                     if successive_correct_outputs >= identical_outputs_before_stop:
                         # Update progress bar for early stopping
