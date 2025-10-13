@@ -58,6 +58,133 @@ def check_generation_equals_target_exactly(
     return generated_text.strip() == target_text.strip()
 
 
+def extract_adversarial_strings_context_aware(
+    tokenizer: transformers.AutoTokenizer,
+    best_tokens: torch.Tensor,
+    initial_tokens: torch.Tensor,
+    masks_data: typing.Dict[str, torch.Tensor],
+) -> typing.Tuple[str, str]:
+    """
+    Extract adversarial prefix and suffix from optimized tokens using full context.
+
+    This function decodes the full token sequence and extracts the adversarial
+    strings by using the known positions from masks. This avoids tokenization
+    boundary issues that occur when decoding tokens in isolation.
+
+    Args:
+        tokenizer: HuggingFace tokenizer
+        best_tokens: The optimized token sequence
+        initial_tokens: The initial token sequence (for finding fixed parts)
+        masks_data: Dictionary containing the masks
+
+    Returns:
+        tuple: (optimized_prefix, optimized_suffix) as strings
+    """
+    # Decode the full optimized sequence
+    full_optimized_text = tokenizer.decode(best_tokens, skip_special_tokens=False)
+
+    # Get masks
+    prefix_mask = masks_data.get("prefix_mask")
+    suffix_mask = masks_data.get("suffix_mask")
+    payload_mask = masks_data.get("payload_mask")
+
+    # Find the continuous range for prefix
+    if prefix_mask is not None and len(prefix_mask) > 0:
+        prefix_start_idx = prefix_mask.min().item()
+        prefix_end_idx = prefix_mask.max().item() + 1
+
+        # Decode tokens from beginning up to prefix start to get context before
+        if prefix_start_idx > 0:
+            text_before_prefix = tokenizer.decode(best_tokens[:prefix_start_idx], skip_special_tokens=False)
+        else:
+            text_before_prefix = ""
+
+        # Decode tokens from prefix start to end of sequence
+        text_from_prefix_start = tokenizer.decode(best_tokens[prefix_start_idx:], skip_special_tokens=False)
+
+        # The prefix is the part of text_from_prefix_start up to where payload starts
+        if payload_mask is not None and len(payload_mask) > 0:
+            payload_start_idx = payload_mask.min().item()
+            # Decode from prefix_end to payload_start to find the separator
+            text_between = tokenizer.decode(best_tokens[prefix_end_idx:payload_start_idx], skip_special_tokens=False)
+            # Decode just the prefix range
+            prefix_text = tokenizer.decode(best_tokens[prefix_start_idx:prefix_end_idx], skip_special_tokens=False)
+        else:
+            prefix_text = tokenizer.decode(best_tokens[prefix_mask], skip_special_tokens=False)
+    else:
+        prefix_text = ""
+        text_before_prefix = ""
+
+    # Find the continuous range for suffix
+    if suffix_mask is not None and len(suffix_mask) > 0:
+        suffix_start_idx = suffix_mask.min().item()
+        suffix_end_idx = suffix_mask.max().item() + 1
+
+        # Decode from suffix to get the actual suffix text in context
+        text_from_suffix = tokenizer.decode(best_tokens[suffix_start_idx:], skip_special_tokens=False)
+
+        # Find where suffix ends (before target or end of sequence)
+        target_mask = masks_data.get("target_mask")
+        if target_mask is not None and len(target_mask) > 0:
+            target_start_idx = target_mask.min().item()
+            # Decode between suffix and target
+            text_after_suffix = tokenizer.decode(best_tokens[suffix_end_idx:target_start_idx], skip_special_tokens=False)
+            # The suffix is from suffix_start to suffix_end
+            suffix_text = tokenizer.decode(best_tokens[suffix_start_idx:suffix_end_idx], skip_special_tokens=False)
+        else:
+            suffix_text = tokenizer.decode(best_tokens[suffix_mask], skip_special_tokens=False)
+    else:
+        suffix_text = ""
+
+    # Return the extracted strings
+    return prefix_text, suffix_text
+
+
+def extract_full_injection_string(
+    tokenizer: transformers.AutoTokenizer,
+    best_tokens: torch.Tensor,
+    masks_data: typing.Dict[str, torch.Tensor],
+) -> str:
+    """
+    Extract the complete injection string (prefix + payload + suffix) from optimized tokens.
+
+    Args:
+        tokenizer: HuggingFace tokenizer
+        best_tokens: The optimized token sequence
+        masks_data: Dictionary containing the masks
+
+    Returns:
+        str: The complete injection string
+    """
+    prefix_mask = masks_data.get("prefix_mask")
+    suffix_mask = masks_data.get("suffix_mask")
+    payload_mask = masks_data.get("payload_mask")
+
+    # Find the range that encompasses prefix, payload, and suffix
+    all_indices = []
+    if prefix_mask is not None and len(prefix_mask) > 0:
+        all_indices.append(prefix_mask)
+    if payload_mask is not None and len(payload_mask) > 0:
+        all_indices.append(payload_mask)
+    if suffix_mask is not None and len(suffix_mask) > 0:
+        all_indices.append(suffix_mask)
+
+    if len(all_indices) == 0:
+        return ""
+
+    all_indices = torch.cat(all_indices)
+
+    # Get min and max to find the contiguous range
+    min_idx = all_indices.min().item()
+    max_idx = all_indices.max().item() + 1
+
+    # Extract and decode the full injection range
+    injection_tokens = best_tokens[min_idx:max_idx]
+    full_injection = tokenizer.decode(injection_tokens, skip_special_tokens=False)
+
+    return full_injection
+
+
 def og_gcg_signal(
     model: transformers.AutoModelForCausalLM,
     tokenizer: transformers.AutoTokenizer,
@@ -85,8 +212,8 @@ def og_gcg_signal(
         print(f"Optim mask positions: {optim_mask.tolist()}")
         print(f"Target mask positions: {target_mask.tolist()}")
         print(f"{'='*80}")
-        print(f"DECODED INPUT TEXT:")
-        print(decoded_text)
+        print(f"DECODED INPUT TEXT (last 1000 characters):")
+        print(decoded_text[-1000:])
         print(f"{'='*80}")
 
         # Also show what's being optimized separately
