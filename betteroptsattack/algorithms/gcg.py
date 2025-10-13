@@ -69,10 +69,40 @@ def og_gcg_signal(
     step_num,
     clamp_tokens: bool = True,
     ascii_only: bool = False,
+    debug: bool = False,
     **kwargs,
 ):
     optim_mask: torch.Tensor = masks_data["optim_mask"]
     target_mask: torch.Tensor = masks_data["target_mask"]
+
+    # Debug: Print the decoded input if debug flag is set
+    if debug:
+        decoded_text = tokenizer.decode(input_points, skip_special_tokens=False)
+        print(f"\n{'='*80}")
+        print(f"DEBUG og_gcg_signal - Step {step_num}")
+        print(f"{'='*80}")
+        print(f"Input tokens shape: {input_points.shape}")
+        print(f"Optim mask positions: {optim_mask.tolist()}")
+        print(f"Target mask positions: {target_mask.tolist()}")
+        print(f"{'='*80}")
+        print(f"DECODED INPUT TEXT:")
+        print(decoded_text)
+        print(f"{'='*80}")
+
+        # Also show what's being optimized separately
+        if len(optim_mask) > 0:
+            # Split optim_mask into prefix and suffix if possible
+            prefix_mask = masks_data.get("prefix_mask", None)
+            suffix_mask = masks_data.get("suffix_mask", None)
+            if prefix_mask is not None and suffix_mask is not None:
+                print(f"PREFIX tokens ({len(prefix_mask)}): {tokenizer.decode(input_points[prefix_mask])}")
+                print(f"SUFFIX tokens ({len(suffix_mask)}): {tokenizer.decode(input_points[suffix_mask])}")
+            else:
+                print(f"OPTIMIZED tokens: {tokenizer.decode(input_points[optim_mask])}")
+
+        # Show target
+        print(f"TARGET tokens: {tokenizer.decode(input_points[target_mask])}")
+        print(f"{'='*80}\n")
 
     # Get vocabulary size from embedding layer (modern approach)
     vocab_size = model.get_input_embeddings().weight.shape[0]
@@ -313,6 +343,8 @@ def custom_gcg(
     # Exact target only mode: optimize to make model produce ONLY the target string followed by EOS token
     # (instead of just starting with the target string)
     exact_target_only: bool = False,
+    # Debug mode: print decoded text at each optimization step
+    debug_mode: bool = False,
 ):
     logger.log(input_tokenized_data)
 
@@ -480,6 +512,11 @@ def custom_gcg(
     for step_num in pbar:
         step_start_time = time.time()
 
+        # Add debug flag to signal_kwargs if debug mode is enabled
+        current_signal_kwargs = signal_kwargs or {}
+        if debug_mode:
+            current_signal_kwargs["debug"] = True
+
         best_tokens_indices = signal_function(
             model,
             tokenizer,
@@ -490,7 +527,7 @@ def custom_gcg(
             step_num=step_num,
             clamp_tokens=clamp_tokens,
             ascii_only=ascii_only,
-            **(signal_kwargs or {}),
+            **current_signal_kwargs,
         )
 
         indices_to_sample = set()
