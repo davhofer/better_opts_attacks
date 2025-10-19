@@ -95,22 +95,32 @@ def extract_adversarial_strings_context_aware(
 
         # Decode tokens from beginning up to prefix start to get context before
         if prefix_start_idx > 0:
-            text_before_prefix = tokenizer.decode(best_tokens[:prefix_start_idx], skip_special_tokens=False)
+            text_before_prefix = tokenizer.decode(
+                best_tokens[:prefix_start_idx], skip_special_tokens=False
+            )
         else:
             text_before_prefix = ""
 
         # Decode tokens from prefix start to end of sequence
-        text_from_prefix_start = tokenizer.decode(best_tokens[prefix_start_idx:], skip_special_tokens=False)
+        text_from_prefix_start = tokenizer.decode(
+            best_tokens[prefix_start_idx:], skip_special_tokens=False
+        )
 
         # The prefix is the part of text_from_prefix_start up to where payload starts
         if payload_mask is not None and len(payload_mask) > 0:
             payload_start_idx = payload_mask.min().item()
             # Decode from prefix_end to payload_start to find the separator
-            text_between = tokenizer.decode(best_tokens[prefix_end_idx:payload_start_idx], skip_special_tokens=False)
+            text_between = tokenizer.decode(
+                best_tokens[prefix_end_idx:payload_start_idx], skip_special_tokens=False
+            )
             # Decode just the prefix range
-            prefix_text = tokenizer.decode(best_tokens[prefix_start_idx:prefix_end_idx], skip_special_tokens=False)
+            prefix_text = tokenizer.decode(
+                best_tokens[prefix_start_idx:prefix_end_idx], skip_special_tokens=False
+            )
         else:
-            prefix_text = tokenizer.decode(best_tokens[prefix_mask], skip_special_tokens=False)
+            prefix_text = tokenizer.decode(
+                best_tokens[prefix_mask], skip_special_tokens=False
+            )
     else:
         prefix_text = ""
         text_before_prefix = ""
@@ -121,18 +131,26 @@ def extract_adversarial_strings_context_aware(
         suffix_end_idx = suffix_mask.max().item() + 1
 
         # Decode from suffix to get the actual suffix text in context
-        text_from_suffix = tokenizer.decode(best_tokens[suffix_start_idx:], skip_special_tokens=False)
+        text_from_suffix = tokenizer.decode(
+            best_tokens[suffix_start_idx:], skip_special_tokens=False
+        )
 
         # Find where suffix ends (before target or end of sequence)
         target_mask = masks_data.get("target_mask")
         if target_mask is not None and len(target_mask) > 0:
             target_start_idx = target_mask.min().item()
             # Decode between suffix and target
-            text_after_suffix = tokenizer.decode(best_tokens[suffix_end_idx:target_start_idx], skip_special_tokens=False)
+            text_after_suffix = tokenizer.decode(
+                best_tokens[suffix_end_idx:target_start_idx], skip_special_tokens=False
+            )
             # The suffix is from suffix_start to suffix_end
-            suffix_text = tokenizer.decode(best_tokens[suffix_start_idx:suffix_end_idx], skip_special_tokens=False)
+            suffix_text = tokenizer.decode(
+                best_tokens[suffix_start_idx:suffix_end_idx], skip_special_tokens=False
+            )
         else:
-            suffix_text = tokenizer.decode(best_tokens[suffix_mask], skip_special_tokens=False)
+            suffix_text = tokenizer.decode(
+                best_tokens[suffix_mask], skip_special_tokens=False
+            )
     else:
         suffix_text = ""
 
@@ -205,16 +223,20 @@ def og_gcg_signal(
     # Debug: Print the decoded input if debug flag is set
     if debug:
         decoded_text = tokenizer.decode(input_points, skip_special_tokens=False)
-        print(f"\n{'='*80}")
+        print(f"\n{'=' * 80}")
         print(f"DEBUG og_gcg_signal - Step {step_num}")
-        print(f"{'='*80}")
+        print(f"{'=' * 80}")
         print(f"Input tokens shape: {input_points.shape}")
         print(f"Optim mask positions: {optim_mask.tolist()}")
         print(f"Target mask positions: {target_mask.tolist()}")
-        print(f"{'='*80}")
+        print(f"{'=' * 80}")
         print(f"DECODED INPUT TEXT (last 1000 characters):")
         print(decoded_text[-1000:])
-        print(f"{'='*80}")
+        print(f"{'=' * 80}")
+        print("TOKENS SEEN DURING OPTIMIZATION:")
+        for i in range(0, len(input_points), 10):
+            print(input_points[i : i + 10])
+        print(f"{'=' * 80}")
 
         # Also show what's being optimized separately
         if len(optim_mask) > 0:
@@ -222,14 +244,17 @@ def og_gcg_signal(
             prefix_mask = masks_data.get("prefix_mask", None)
             suffix_mask = masks_data.get("suffix_mask", None)
             if prefix_mask is not None and suffix_mask is not None:
-                print(f"PREFIX tokens ({len(prefix_mask)}): {tokenizer.decode(input_points[prefix_mask])}")
-                print(f"SUFFIX tokens ({len(suffix_mask)}): {tokenizer.decode(input_points[suffix_mask])}")
-            else:
-                print(f"OPTIMIZED tokens: {tokenizer.decode(input_points[optim_mask])}")
+                print(
+                    f"PREFIX tokens (according to prefix mask) ({len(prefix_mask)}): {tokenizer.decode(input_points[prefix_mask])}"
+                )
+                print(
+                    f"SUFFIX tokens (according to suffix mask) ({len(suffix_mask)}): {tokenizer.decode(input_points[suffix_mask])}"
+                )
+            print(
+                f"OPTIMIZED tokens (according to optim mask) ({len(optim_mask)}): {tokenizer.decode(input_points[optim_mask])}"
+            )
 
-        # Show target
-        print(f"TARGET tokens: {tokenizer.decode(input_points[target_mask])}")
-        print(f"{'='*80}\n")
+        print(f"{'=' * 80}\n")
 
     # Get vocabulary size from embedding layer (modern approach)
     vocab_size = model.get_input_embeddings().weight.shape[0]
@@ -451,19 +476,17 @@ def custom_gcg(
     custom_gcg_hyperparams: typing.Dict,
     logger: experiment_logger.ExperimentLogger,
     *,
-    eval_every_step,
     early_stop,
-    eval_initial,
     identical_outputs_before_stop,
     generation_config,
     to_cache_logits,
     to_cache_attentions,
     clamp_tokens: bool = True,
     ascii_only: bool = False,
-    # Enhanced metrics parameters
-    enable_enhanced_metrics: bool = False,
+    # Metrics parameters
+    compute_metrics: bool = False,
+    metrics_every_n_steps: int = 1,
     save_metrics_path: typing.Optional[str] = None,
-    check_extended_metrics_every_n_steps: int = 10,
     save_adv_string_every_n_steps: int = 25,
     # Decode-reencode validation
     filter_tokenized_sequences: bool = False,
@@ -475,9 +498,15 @@ def custom_gcg(
 ):
     logger.log(input_tokenized_data)
 
-    # Setup enhanced metrics if enabled
+    # Validate flags
+    if early_stop and not compute_metrics:
+        raise ValueError("early_stop requires compute_metrics=True")
+
+    # Setup metrics collection if enabled
     per_step_metrics = []
-    if enable_enhanced_metrics and save_metrics_path:
+    if compute_metrics:
+        if save_metrics_path is None:
+            raise ValueError("save_metrics_path must be provided when compute_metrics=True")
         metrics_file = Path(save_metrics_path)
         metrics_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -504,10 +533,14 @@ def custom_gcg(
 
         # Extend target mask to include EOS position
         eos_position = target_mask[-1] + 1
-        target_mask_extended = torch.cat([
-            target_mask,
-            torch.tensor([eos_position], device=target_mask.device, dtype=target_mask.dtype)
-        ])
+        target_mask_extended = torch.cat(
+            [
+                target_mask,
+                torch.tensor(
+                    [eos_position], device=target_mask.device, dtype=target_mask.dtype
+                ),
+            ]
+        )
 
         # Extend input_tokens to include EOS at the appropriate position
         # We need to insert EOS token at the position after the last target token
@@ -515,11 +548,17 @@ def custom_gcg(
         if eos_position >= len(input_tokens):
             # Pad input_tokens if necessary (shouldn't normally happen)
             padding_needed = eos_position - len(input_tokens) + 1
-            input_tokens = torch.cat([
-                input_tokens,
-                torch.full((padding_needed,), tokenizer.pad_token_id or 0,
-                          device=input_tokens.device, dtype=input_tokens.dtype)
-            ])
+            input_tokens = torch.cat(
+                [
+                    input_tokens,
+                    torch.full(
+                        (padding_needed,),
+                        tokenizer.pad_token_id or 0,
+                        device=input_tokens.device,
+                        dtype=input_tokens.dtype,
+                    ),
+                ]
+            )
 
         # Set the EOS token at the appropriate position
         input_tokens[eos_position] = tokenizer.eos_token_id
@@ -529,7 +568,7 @@ def custom_gcg(
 
         logger.log(
             f"exact_target_only enabled: Extended target to include EOS token at position {eos_position}",
-            event_type="info"
+            event_type="info",
         )
     else:
         original_target_tokens = input_tokens[target_mask].clone()
@@ -556,7 +595,9 @@ def custom_gcg(
     if true_loss_kwargs is None:
         true_loss_kwargs = {}
     true_loss_kwargs["att_cacher"] = att_cacher
-    if eval_initial:
+
+    # Evaluate initial state if metrics are enabled
+    if compute_metrics:
         step_start_time = time.time()
         initial_true_loss = true_loss_function(
             model,
@@ -582,6 +623,14 @@ def custom_gcg(
         logger.log(initial_logprobs, step_num=-1)
         logprobs_sequences.append(initial_logprobs)
         input_tokens_for_generation = current_best_tokens[eval_input_mask]
+
+        print(f"{'=' * 80}")
+        print("TOKENS SEEN DURING OPTIMIZATION (AT GENERATION EVAL):")
+        toks = input_tokens_for_generation.tolist()
+        for i in range(0, len(toks), 10):
+            print(toks[i : i + 10])
+        print(f"{'=' * 80}")
+
         generated_output_tokens = model.generate(
             torch.unsqueeze(input_tokens_for_generation, dim=0).to(model.device),
             attention_mask=torch.unsqueeze(
@@ -596,27 +645,26 @@ def custom_gcg(
         )[0]
         logger.log(generated_output_string, step_num=-1)
 
-        # Extended metrics for initial state (only if enhanced metrics enabled)
-        if enable_enhanced_metrics and save_metrics_path:
-            target_tokens = input_tokens[target_mask]
-            argmax_matches = check_argmax_match(
-                model, tokenizer, current_best_tokens, masks_data, target_tokens
-            )
-            starts_with_target = check_generation_starts_with_target(
-                generated_output_string, target_tokens, tokenizer
-            )
+        # Compute metrics for initial state
+        target_tokens = input_tokens[target_mask]
+        argmax_matches = check_argmax_match(
+            model, tokenizer, current_best_tokens, masks_data, target_tokens
+        )
+        starts_with_target = check_generation_starts_with_target(
+            generated_output_string, target_tokens, tokenizer
+        )
 
-            initial_metric = {
-                "step": -1,
-                "loss": initial_logprobs,
-                "argmax_matches_target": argmax_matches,
-                "generation_starts_with_target": starts_with_target,
-                "generated_text": generated_output_string[:100],
-                "time_elapsed": time.time() - step_start_time,
-            }
-            per_step_metrics.append(initial_metric)
-            with open(metrics_file, "w") as f:
-                f.write(json.dumps(initial_metric) + "\n")
+        initial_metric = {
+            "step": -1,
+            "loss": initial_logprobs,
+            "argmax_matches_target": argmax_matches,
+            "generation_starts_with_target": starts_with_target,
+            "generated_text": generated_output_string[:100],
+            "time_elapsed": time.time() - step_start_time,
+        }
+        per_step_metrics.append(initial_metric)
+        with open(metrics_file, "w") as f:
+            f.write(json.dumps(initial_metric) + "\n")
 
     step_num = 0
 
@@ -626,7 +674,6 @@ def custom_gcg(
     current_best_true_loss_chunk = []
     current_best_tokens_chunk = []
     logprobs_chunk = []
-    generated_output_string_chunk = []
 
     # Create progress bar for optimization steps
     pbar = tqdm(
@@ -793,13 +840,35 @@ def custom_gcg(
             }
         )
 
-        # Extended metrics collection
-        if save_metrics_path:
+        # Compute and save metrics if enabled
+        if compute_metrics and step_num % metrics_every_n_steps == 0:
             target_tokens = input_tokens[target_mask]
 
-            # Always check argmax match
+            # Check argmax match
             argmax_matches = check_argmax_match(
                 model, tokenizer, current_best_tokens, masks_data, target_tokens
+            )
+
+            # Generate text to check if it starts with target
+            with torch.no_grad():
+                input_tokens_for_generation = current_best_tokens[eval_input_mask]
+                generated_tokens = model.generate(
+                    torch.unsqueeze(input_tokens_for_generation, dim=0).to(
+                        model.device
+                    ),
+                    attention_mask=torch.unsqueeze(
+                        torch.ones(input_tokens_for_generation.shape), dim=0
+                    ).to(model.device),
+                    **generation_config,
+                )
+                # Get the actual number of input tokens used for generation
+                input_length = len(input_tokens_for_generation)
+                generated_text = tokenizer.batch_decode(
+                    generated_tokens[:, input_length:]
+                )[0]
+
+            starts_with_target = check_generation_starts_with_target(
+                generated_text, target_tokens, tokenizer
             )
 
             # Prepare step metrics
@@ -807,44 +876,13 @@ def custom_gcg(
                 "step": step_num,
                 "loss": logprobs,
                 "argmax_matches_target": argmax_matches,
+                "generation_starts_with_target": starts_with_target,
+                "generated_text": generated_text[:100],
                 "time_elapsed": time.time() - step_start_time,
             }
 
-            # Check extended metrics periodically (only if enhanced metrics enabled)
-            if (
-                enable_enhanced_metrics
-                and step_num % check_extended_metrics_every_n_steps == 0
-            ):
-                # Generate text for extended checks
-                with torch.no_grad():
-                    input_tokens_for_generation = current_best_tokens[eval_input_mask]
-                    generated_tokens = model.generate(
-                        torch.unsqueeze(input_tokens_for_generation, dim=0).to(
-                            model.device
-                        ),
-                        attention_mask=torch.unsqueeze(
-                            torch.ones(input_tokens_for_generation.shape), dim=0
-                        ).to(model.device),
-                        **generation_config,
-                    )
-                    # Get the actual number of input tokens used for generation
-                    input_length = len(input_tokens_for_generation)
-                    extended_generated_text = tokenizer.batch_decode(
-                        generated_tokens[:, input_length:]
-                    )[0]
-
-                starts_with_target = check_generation_starts_with_target(
-                    extended_generated_text, target_tokens, tokenizer
-                )
-
-                step_metric["generation_starts_with_target"] = starts_with_target
-                step_metric["generated_text"] = extended_generated_text[:100]
-
-            # Save adversarial string periodically (only if enhanced metrics enabled)
-            if (
-                enable_enhanced_metrics
-                and step_num % save_adv_string_every_n_steps == 0
-            ):
+            # Add adversarial string periodically
+            if step_num % save_adv_string_every_n_steps == 0:
                 # Get prefix and suffix tokens separately
                 prefix_tokens = current_best_tokens[masks_data["prefix_mask"]]
                 suffix_tokens = current_best_tokens[masks_data["suffix_mask"]]
@@ -853,66 +891,31 @@ def custom_gcg(
                 suffix_str = tokenizer.decode(suffix_tokens)
                 step_metric["current_adv_string"] = f"{prefix_str} . {suffix_str}"
 
-            # Save metrics incrementally (only if enhanced metrics enabled)
-            if enable_enhanced_metrics:
-                per_step_metrics.append(step_metric)
-                if save_metrics_path:
-                    with open(metrics_file, "a") as f:
-                        f.write(json.dumps(step_metric) + "\n")
-
-        if eval_every_step:
-            input_tokens_for_generation = current_best_tokens[eval_input_mask]
-            generated_output_tokens = model.generate(
-                torch.unsqueeze(input_tokens_for_generation, dim=0).to(model.device),
-                attention_mask=torch.unsqueeze(
-                    torch.ones(input_tokens_for_generation.shape), dim=0
-                ).to(model.device),
-                **generation_config,
-            )
-            # Get the actual number of input tokens used for generation
-            input_length = len(input_tokens_for_generation)
-            generated_output_string = tokenizer.batch_decode(
-                generated_output_tokens[:, input_length:]
-            )[0]
-            generated_output_string_chunk.append(generated_output_string)
+            # Early stopping logic (uses generated_text from metrics)
+            # Check this BEFORE saving so we can add early_stop flag if needed
+            should_stop = False
             if early_stop:
                 # Choose validation function based on exact_target_only mode
                 if exact_target_only:
                     # In exact_target_only mode, require exact match
                     target_match = check_generation_equals_target_exactly(
-                        generated_output_string,
+                        generated_text,
                         original_target_tokens,  # Use original target without EOS
                         tokenizer,
                     )
                 else:
                     # In normal mode, check if target appears at the beginning
                     target_match = check_generation_starts_with_target(
-                        generated_output_string,
-                        input_tokenized_data["tokens"][target_mask],
+                        generated_text,
+                        target_tokens,
                         tokenizer,
                     )
 
                 if target_match:
                     successive_correct_outputs += 1
                     if successive_correct_outputs >= identical_outputs_before_stop:
-                        # Update progress bar for early stopping
-                        pbar.set_description("GCG Optimization (Early Stop)")
-                        pbar.set_postfix(
-                            {
-                                "Loss": f"{logprobs:.4f}",
-                                "Best": f"{min(logprobs_sequences):.4f}",
-                                "Success": f"{successive_correct_outputs}",
-                                "Status": "SUCCESS",
-                            }
-                        )
-
-                        # Log early stopping with extended metrics if enabled
-                        if (
-                            enable_enhanced_metrics
-                            and save_metrics_path
-                            and "current_adv_string" not in step_metric
-                        ):
-                            # Add final adversarial string before stopping
+                        # Add final adversarial string if not already included
+                        if "current_adv_string" not in step_metric:
                             prefix_tokens = current_best_tokens[
                                 masks_data["prefix_mask"]
                             ]
@@ -924,18 +927,31 @@ def custom_gcg(
                             step_metric["current_adv_string"] = (
                                 f"{prefix_str} . {suffix_str}"
                             )
-                            step_metric["early_stop"] = True
-                            # Re-save the metric with early stop indicator
-                            per_step_metrics[-1] = step_metric
-                            # Rewrite the last line in the file
-                            with open(metrics_file, "r") as f:
-                                lines = f.readlines()
-                            lines[-1] = json.dumps(step_metric) + "\n"
-                            with open(metrics_file, "w") as f:
-                                f.writelines(lines)
-                        break
+
+                        step_metric["early_stop"] = True
+                        should_stop = True
+
+                        # Update progress bar for early stopping
+                        pbar.set_description("GCG Optimization (Early Stop)")
+                        pbar.set_postfix(
+                            {
+                                "Loss": f"{logprobs:.4f}",
+                                "Best": f"{min(logprobs_sequences):.4f}",
+                                "Success": f"{successive_correct_outputs}",
+                                "Status": "SUCCESS",
+                            }
+                        )
                 else:
                     successive_correct_outputs = 0
+
+            # Save metrics (now includes early_stop flag if applicable)
+            per_step_metrics.append(step_metric)
+            with open(metrics_file, "a") as f:
+                f.write(json.dumps(step_metric) + "\n")
+
+            # Break after saving if early stop was triggered
+            if should_stop:
+                break
 
         if (step_num + 1) % 10 == 0:
             logger.log(substitution_data_chunk, step_num=step_num)
@@ -944,7 +960,6 @@ def custom_gcg(
             logger.log(current_best_tokens_chunk, step_num=step_num)
             logger.log(best_tokens_chunk, step_num=step_num)
             logger.log(logprobs_chunk, step_num=step_num)
-            logger.log(generated_output_string_chunk, step_num=step_num)
 
             substitution_data_chunk = []
             true_losses_chunk = []
@@ -952,7 +967,6 @@ def custom_gcg(
             current_best_tokens_chunk = []
             best_tokens_chunk = []
             logprobs_chunk = []
-            generated_output_string_chunk = []
 
     # Close progress bar
     pbar.close()
@@ -970,8 +984,8 @@ def custom_gcg(
         logger.log(f"Invalidation rate: {invalid_rate:.2f}%")
         logger.log(f"{'=' * 80}\n")
 
-    # Return extended results if enhanced metrics were enabled
-    if enable_enhanced_metrics:
+    # Return extended results if metrics were enabled
+    if compute_metrics:
         return {
             "logprobs_sequences": logprobs_sequences,
             "best_output_sequences": best_output_sequences,
