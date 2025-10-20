@@ -1126,6 +1126,18 @@ def custom_gcg(
     total_candidates_checked = 0
     total_candidates_invalid = 0
 
+    # Timing statistics (only collected when debug_mode=True)
+    timing_stats = {
+        "signal_function": [],
+        "candidate_generation": [],
+        "loss_computation": [],
+        "decode_reencode_validation": [],
+        "metrics_computation": [],
+        "early_stopping_check": [],
+        "logging": [],
+        "total_step": [],
+    }
+
     if true_loss_kwargs is None:
         true_loss_kwargs = {}
     true_loss_kwargs["att_cacher"] = att_cacher
@@ -1175,6 +1187,8 @@ def custom_gcg(
         if debug_mode:
             current_signal_kwargs["debug"] = True
 
+        # Time signal function
+        signal_start = time.time()
         best_tokens_indices = signal_function(
             model,
             tokenizer,
@@ -1187,8 +1201,12 @@ def custom_gcg(
             ascii_only=ascii_only,
             **current_signal_kwargs,
         )
+        signal_end = time.time()
+        if debug_mode:
+            timing_stats["signal_function"].append(signal_end - signal_start)
 
         # Generate candidate substitutions
+        candidate_gen_start = time.time()
         if isinstance(custom_gcg_hyperparams["forward_eval_candidates"], str):
             if custom_gcg_hyperparams["forward_eval_candidates"] == "all":
                 substitution_data = _generate_all_candidates(
@@ -1213,7 +1231,12 @@ def custom_gcg(
         gc.collect()
         torch.cuda.empty_cache()
         substitution_data_chunk.append(substitution_data)
+        candidate_gen_end = time.time()
+        if debug_mode:
+            timing_stats["candidate_generation"].append(candidate_gen_end - candidate_gen_start)
 
+        # Time loss computation
+        loss_comp_start = time.time()
         true_losses = true_loss_function(
             model,
             tokenizer,
@@ -1223,14 +1246,21 @@ def custom_gcg(
             logger,
             **true_loss_kwargs,
         )
+        loss_comp_end = time.time()
+        if debug_mode:
+            timing_stats["loss_computation"].append(loss_comp_end - loss_comp_start)
 
         # Decode-reencode validation: filter out candidates that change during tokenization cycle
+        validation_start = time.time()
         if filter_tokenized_sequences:
             num_checked, num_invalid = _apply_decode_reencode_filter(
                 substitution_data, tokenizer, true_losses, logger, step_num
             )
             total_candidates_checked += num_checked
             total_candidates_invalid += num_invalid
+        validation_end = time.time()
+        if debug_mode:
+            timing_stats["decode_reencode_validation"].append(validation_end - validation_start)
 
         true_losses_chunk.append(true_losses)
         current_best_true_loss = true_losses[torch.argmin(true_losses)]
@@ -1260,6 +1290,7 @@ def custom_gcg(
         )
 
         # Compute and save metrics if enabled
+        metrics_start = time.time()
         if compute_metrics and step_num % metrics_every_n_steps == 0:
             target_tokens = input_tokens[target_mask]
 
@@ -1279,6 +1310,7 @@ def custom_gcg(
             )
 
             # Check early stopping
+            early_stop_start = time.time()
             should_stop, successive_correct_outputs = _check_early_stopping(
                 early_stop,
                 exact_target_only,
@@ -1295,6 +1327,9 @@ def custom_gcg(
                 logprobs_sequences,
                 pbar,
             )
+            early_stop_end = time.time()
+            if debug_mode:
+                timing_stats["early_stopping_check"].append(early_stop_end - early_stop_start)
 
             # Save metrics (now includes early_stop flag if applicable)
             per_step_metrics.append(step_metric)
@@ -1304,8 +1339,12 @@ def custom_gcg(
             # Break after saving if early stop was triggered
             if should_stop:
                 break
+        metrics_end = time.time()
+        if debug_mode:
+            timing_stats["metrics_computation"].append(metrics_end - metrics_start)
 
         if (step_num + 1) % 10 == 0:
+            logging_start = time.time()
             _log_chunk_data(
                 logger,
                 step_num,
@@ -1323,6 +1362,14 @@ def custom_gcg(
             current_best_tokens_chunk = []
             best_tokens_chunk = []
             logprobs_chunk = []
+            logging_end = time.time()
+            if debug_mode:
+                timing_stats["logging"].append(logging_end - logging_start)
+
+        # Track total step time
+        step_end_time = time.time()
+        if debug_mode:
+            timing_stats["total_step"].append(step_end_time - step_start_time)
 
     # Close progress bar
     pbar.close()
@@ -1333,6 +1380,56 @@ def custom_gcg(
     _log_final_statistics(
         filter_tokenized_sequences, total_candidates_checked, total_candidates_invalid, logger
     )
+
+    # Print timing statistics if debug mode is enabled
+    if debug_mode:
+        print(f"\n{'=' * 80}")
+        print("OPTIMIZATION TIMING STATISTICS")
+        print(f"{'=' * 80}")
+
+        # Calculate totals and averages
+        total_time = sum(timing_stats["total_step"])
+        num_steps = len(timing_stats["total_step"])
+
+        print(f"\nTotal optimization time: {total_time:.2f}s across {num_steps} steps")
+        print(f"Average time per step: {total_time / num_steps:.2f}s\n")
+
+        # Create breakdown table
+        print(f"{'Component':<30} {'Total (s)':<12} {'Avg (s)':<12} {'% of Total':<12}")
+        print(f"{'-' * 66}")
+
+        components = [
+            ("Signal Function", "signal_function"),
+            ("Candidate Generation", "candidate_generation"),
+            ("Loss Computation", "loss_computation"),
+            ("Decode-Reencode Validation", "decode_reencode_validation"),
+            ("Metrics Computation", "metrics_computation"),
+            ("Early Stopping Check", "early_stopping_check"),
+            ("Logging", "logging"),
+        ]
+
+        for display_name, key in components:
+            times = timing_stats[key]
+            if len(times) > 0:
+                total = sum(times)
+                avg = total / len(times)
+                pct = (total / total_time) * 100 if total_time > 0 else 0
+                print(f"{display_name:<30} {total:<12.2f} {avg:<12.4f} {pct:<12.1f}")
+            else:
+                print(f"{display_name:<30} {'N/A':<12} {'N/A':<12} {'N/A':<12}")
+
+        print(f"{'-' * 66}")
+        print(f"{'TOTAL':<30} {total_time:<12.2f} {total_time / num_steps:<12.2f} {'100.0':<12}")
+
+        # Show unaccounted time (from other operations like gc.collect, progress bar updates, etc.)
+        accounted_time = sum([sum(timing_stats[key]) for _, key in components])
+        unaccounted = total_time - accounted_time
+        if abs(unaccounted) > 0.01:  # Only show if significant
+            pct_unaccounted = (unaccounted / total_time) * 100 if total_time > 0 else 0
+            print(f"\n{'Unaccounted time':<30} {unaccounted:<12.2f} {unaccounted / num_steps:<12.4f} {pct_unaccounted:<12.1f}")
+            print("(Includes gc.collect, torch.cuda.empty_cache, progress bar updates, etc.)")
+
+        print(f"{'=' * 80}\n")
 
     # Return extended results if metrics were enabled
     if compute_metrics:
