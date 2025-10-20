@@ -493,18 +493,23 @@ def _validate_parameters(
 def _setup_caching(
     to_cache_logits: bool,
     to_cache_attentions: bool,
+    aggressive_memory_management: bool = False,
 ) -> typing.Tuple[typing.Any, typing.Optional[typing.Any]]:
     """Setup caching for logprobs and attentions.
 
     Args:
         to_cache_logits: Whether to cache logprobs
         to_cache_attentions: Whether to cache attentions
+        aggressive_memory_management: Whether to use aggressive memory management (sync every batch)
 
     Returns:
         Tuple of (target_logprobs_function, att_cacher)
     """
     if to_cache_logits:
-        target_logprobs = attack_utility.CachedTargetLogprobs(to_cache=True)
+        target_logprobs = attack_utility.CachedTargetLogprobs(
+            to_cache=True,
+            aggressive_memory_management=aggressive_memory_management
+        )
     else:
         target_logprobs = attack_utility.target_logprobs
 
@@ -1070,6 +1075,8 @@ def custom_gcg(
     debug_mode: bool = False,
     # Random seed for reproducibility
     seed: typing.Optional[int] = None,
+    # Aggressive memory management: sync and cleanup after every batch (slower but safer for low memory)
+    aggressive_memory_management: bool = False,
 ):
     # Set random seeds for reproducibility
     if seed is not None:
@@ -1093,7 +1100,9 @@ def custom_gcg(
         metrics_file.parent.mkdir(parents=True, exist_ok=True)
 
     # Setup caching
-    target_logprobs, att_cacher = _setup_caching(to_cache_logits, to_cache_attentions)
+    target_logprobs, att_cacher = _setup_caching(
+        to_cache_logits, to_cache_attentions, aggressive_memory_management
+    )
 
     # Extract tokens and masks
     input_tokens: torch.tensor = input_tokenized_data["tokens"]

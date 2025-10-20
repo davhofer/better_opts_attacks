@@ -1069,7 +1069,7 @@ def _get_layer_obj(model):
         return model.model.layers
 
 
-DEFAULT_MAXIMUM_BATCH_SIZE = 512
+DEFAULT_MAXIMUM_BATCH_SIZE = 1024
 class CachedTargetLogprobs:
 
     def _cache_init(self, model, tokenizer, input_tokenized_data):
@@ -1105,7 +1105,12 @@ class CachedTargetLogprobs:
                             input_ids = input_ids_sliced_batch.to(model.device),
                             past_key_values = dynamic_cache
                         ).logits
-                        self.batch_size = batch_size // 2
+                        # If aggressive memory management, use 50% of capacity for safety
+                        # Otherwise use 100% of the working batch size
+                        if self.aggressive_memory_management:
+                            self.batch_size = batch_size // 2
+                        else:
+                            self.batch_size = batch_size
                         for pair in batched_kv_cache:
                             del pair
                         del batched_kv_cache
@@ -1120,8 +1125,9 @@ class CachedTargetLogprobs:
                         torch.cuda.empty_cache()
                         batch_size //= 2
 
-    def __init__(self, to_cache=True):
+    def __init__(self, to_cache=True, aggressive_memory_management=False):
         self.to_cache = to_cache
+        self.aggressive_memory_management = aggressive_memory_management
         self.is_inited = False
         self.cache_object = None
         self.batch_size = None
@@ -1144,7 +1150,7 @@ class CachedTargetLogprobs:
         data_split = torch.split(input_points_sliced, self.batch_size, dim=0)
         losses_list = []
         with torch.no_grad():
-            for data_batch in data_split:
+            for batch_idx, data_batch in enumerate(data_split):
                     new_legacy_cache = []
                     for key_cache, value_cache in self.cache_object["past_key_values"]:
                         new_legacy_cache.append((key_cache.expand(data_batch.shape[0], -1, -1, -1).clone(), value_cache.expand(data_batch.shape[0], -1, -1, -1).clone()))
@@ -1157,9 +1163,18 @@ class CachedTargetLogprobs:
                     for pair in new_legacy_cache:
                         del pair
                     del new_legacy_cache, dynamic_cache, output
-                    torch.cuda.synchronize()
-                    gc.collect()
-                    torch.cuda.empty_cache()
+
+                    # Only synchronize if aggressive_memory_management is enabled, or every 4th iteration
+                    if self.aggressive_memory_management or batch_idx % 4 == 0:
+                        torch.cuda.synchronize()
+                        gc.collect()
+                        torch.cuda.empty_cache()
+
+        # Final synchronization and cleanup after all batches
+        torch.cuda.synchronize()
+        gc.collect()
+        torch.cuda.empty_cache()
+
         losses_tensor = torch.cat(losses_list)
         return losses_tensor
 
