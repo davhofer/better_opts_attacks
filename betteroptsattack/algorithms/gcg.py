@@ -1202,7 +1202,7 @@ def custom_gcg(
             **current_signal_kwargs,
         )
         signal_end = time.time()
-        if debug_mode:
+        if compute_metrics:
             timing_stats["signal_function"].append(signal_end - signal_start)
 
         # Generate candidate substitutions
@@ -1232,7 +1232,7 @@ def custom_gcg(
         torch.cuda.empty_cache()
         substitution_data_chunk.append(substitution_data)
         candidate_gen_end = time.time()
-        if debug_mode:
+        if compute_metrics:
             timing_stats["candidate_generation"].append(candidate_gen_end - candidate_gen_start)
 
         # Time loss computation
@@ -1247,7 +1247,7 @@ def custom_gcg(
             **true_loss_kwargs,
         )
         loss_comp_end = time.time()
-        if debug_mode:
+        if compute_metrics:
             timing_stats["loss_computation"].append(loss_comp_end - loss_comp_start)
 
         # Decode-reencode validation: filter out candidates that change during tokenization cycle
@@ -1259,7 +1259,7 @@ def custom_gcg(
             total_candidates_checked += num_checked
             total_candidates_invalid += num_invalid
         validation_end = time.time()
-        if debug_mode:
+        if compute_metrics:
             timing_stats["decode_reencode_validation"].append(validation_end - validation_start)
 
         true_losses_chunk.append(true_losses)
@@ -1328,7 +1328,7 @@ def custom_gcg(
                 pbar,
             )
             early_stop_end = time.time()
-            if debug_mode:
+            if compute_metrics:
                 timing_stats["early_stopping_check"].append(early_stop_end - early_stop_start)
 
             # Save metrics (now includes early_stop flag if applicable)
@@ -1340,7 +1340,7 @@ def custom_gcg(
             if should_stop:
                 break
         metrics_end = time.time()
-        if debug_mode:
+        if compute_metrics:
             timing_stats["metrics_computation"].append(metrics_end - metrics_start)
 
         if (step_num + 1) % 10 == 0:
@@ -1363,12 +1363,12 @@ def custom_gcg(
             best_tokens_chunk = []
             logprobs_chunk = []
             logging_end = time.time()
-            if debug_mode:
+            if compute_metrics:
                 timing_stats["logging"].append(logging_end - logging_start)
 
         # Track total step time
         step_end_time = time.time()
-        if debug_mode:
+        if compute_metrics:
             timing_stats["total_step"].append(step_end_time - step_start_time)
 
     # Close progress bar
@@ -1381,8 +1381,8 @@ def custom_gcg(
         filter_tokenized_sequences, total_candidates_checked, total_candidates_invalid, logger
     )
 
-    # Print timing statistics if debug mode is enabled
-    if debug_mode:
+    # Print timing statistics if compute_metrics is enabled
+    if compute_metrics:
         print(f"\n{'=' * 80}")
         print("OPTIMIZATION TIMING STATISTICS")
         print(f"{'=' * 80}")
