@@ -510,8 +510,10 @@ def _setup_caching(
             to_cache=True,
             aggressive_memory_management=aggressive_memory_management
         )
+        print(f"Loss function: CachedTargetLogprobs (with KV-caching)")
     else:
         target_logprobs = attack_utility.target_logprobs
+        print(f"Loss function: target_logprobs (no caching)")
 
     if to_cache_attentions:
         att_cacher = attack_utility.CachedBulkForward(to_cache=True)

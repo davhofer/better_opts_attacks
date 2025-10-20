@@ -1111,6 +1111,11 @@ class CachedTargetLogprobs:
                             self.batch_size = batch_size // 2
                         else:
                             self.batch_size = batch_size
+
+                        # Log the selected batch size
+                        print(f"CachedTargetLogprobs: Using batch_size={self.batch_size} "
+                              f"(aggressive_memory_management={self.aggressive_memory_management})")
+
                         for pair in batched_kv_cache:
                             del pair
                         del batched_kv_cache
