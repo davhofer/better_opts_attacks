@@ -1068,7 +1068,19 @@ def custom_gcg(
     exact_target_only: bool = False,
     # Debug mode: print decoded text at each optimization step
     debug_mode: bool = False,
+    # Random seed for reproducibility
+    seed: typing.Optional[int] = None,
 ):
+    # Set random seeds for reproducibility
+    if seed is not None:
+        torch.manual_seed(seed)
+        random.seed(seed)
+        np.random.seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
+        logger.log(f"Random seed set to {seed}", event_type="info")
+
     logger.log(input_tokenized_data)
 
     # Validate parameters
