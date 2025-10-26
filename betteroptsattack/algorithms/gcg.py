@@ -792,7 +792,6 @@ def _apply_decode_reencode_filter(
     return total_candidates_checked, num_invalid
 
 
-# TODO: investigate duplicate; true_loss_function and target_logprobs
 def _evaluate_initial_state(
     model: transformers.AutoModelForCausalLM,
     tokenizer: transformers.AutoTokenizer,
@@ -803,7 +802,6 @@ def _evaluate_initial_state(
     generation_config: typing.Dict,
     true_loss_function: typing.Callable,
     true_loss_kwargs: typing.Dict,
-    target_logprobs: typing.Callable,
     debug_logger: logging.Logger,
 ) -> typing.Tuple[typing.List, typing.List, typing.Dict]:
     """Evaluate initial state before optimization.
@@ -816,18 +814,17 @@ def _evaluate_initial_state(
         target_tokens: Target token sequence
         eval_input_mask: Mask for evaluation input
         generation_config: Configuration for generation
-        true_loss_function: Loss function
+        true_loss_function: Loss function (also used for logprobs computation)
         true_loss_kwargs: Kwargs for loss function
-        target_logprobs: Logprobs function
-        logger: Logger instance
+        debug_logger: Logger instance
 
     Returns:
         Tuple of (best_output_sequences, logprobs_sequences, initial_metric)
     """
     step_start_time = time.time()
 
-    # Compute initial loss
-    initial_true_loss = true_loss_function(
+    # Compute initial loss/logprobs using true_loss_function
+    initial_logprobs = true_loss_function(
         model,
         tokenizer,
         torch.unsqueeze(current_best_tokens, 0),
@@ -836,20 +833,9 @@ def _evaluate_initial_state(
         debug_logger=debug_logger,
         **true_loss_kwargs,
     )
-    best_output_sequences = [current_best_tokens.clone()]
-    # Tokens logged in step metrics
-
-    # Compute initial logprobs
-    initial_logprobs = target_logprobs(
-        model,
-        tokenizer,
-        torch.unsqueeze(current_best_tokens, 0),
-        masks_data,
-        target_tokens,
-        debug_logger=debug_logger,
-    )
     initial_logprobs = initial_logprobs.item()
-    # Logprobs logged in step metrics
+
+    best_output_sequences = [current_best_tokens.clone()]
     logprobs_sequences = [initial_logprobs]
 
     # Generate initial output
@@ -1183,7 +1169,6 @@ def custom_gcg(
                 generation_config,
                 true_loss_function,
                 true_loss_kwargs,
-                target_logprobs,
                 debug_logger,
             )
         )
@@ -1289,13 +1274,16 @@ def custom_gcg(
         current_best_tokens = substitution_data[torch.argmin(true_losses)].clone()
         current_best_tokens_chunk.append(current_best_tokens)
         best_output_sequences.append(current_best_tokens.clone())
-        logprobs = target_logprobs(
+
+        # Use true_loss_function for logprobs computation (same function used for selection)
+        logprobs = true_loss_function(
             model,
             tokenizer,
             torch.unsqueeze(current_best_tokens, 0),
             masks_data,
             input_tokens[target_mask],
             debug_logger=debug_logger,
+            **true_loss_kwargs,
         )
         logprobs = logprobs.item()
         logprobs_chunk.append(logprobs)
