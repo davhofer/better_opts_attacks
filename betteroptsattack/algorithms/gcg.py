@@ -170,107 +170,6 @@ def check_generation_equals_target_exactly(
     return generated_text.strip() == target_text.strip()
 
 
-# TODO: is this used?
-def extract_adversarial_strings_context_aware(
-    tokenizer: transformers.AutoTokenizer,
-    best_tokens: torch.Tensor,
-    initial_tokens: torch.Tensor,
-    masks_data: typing.Dict[str, torch.Tensor],
-) -> typing.Tuple[str, str]:
-    """
-    Extract adversarial prefix and suffix from optimized tokens using full context.
-
-    This function decodes the full token sequence and extracts the adversarial
-    strings by using the known positions from masks. This avoids tokenization
-    boundary issues that occur when decoding tokens in isolation.
-
-    Args:
-        tokenizer: HuggingFace tokenizer
-        best_tokens: The optimized token sequence
-        initial_tokens: The initial token sequence (for finding fixed parts)
-        masks_data: Dictionary containing the masks
-
-    Returns:
-        tuple: (optimized_prefix, optimized_suffix) as strings
-    """
-    # Decode the full optimized sequence
-    full_optimized_text = tokenizer.decode(best_tokens, skip_special_tokens=False)
-
-    # Get masks
-    prefix_mask = masks_data.get("prefix_mask")
-    suffix_mask = masks_data.get("suffix_mask")
-    payload_mask = masks_data.get("payload_mask")
-
-    # Find the continuous range for prefix
-    if prefix_mask is not None and len(prefix_mask) > 0:
-        prefix_start_idx = prefix_mask.min().item()
-        prefix_end_idx = prefix_mask.max().item() + 1
-
-        # Decode tokens from beginning up to prefix start to get context before
-        if prefix_start_idx > 0:
-            text_before_prefix = tokenizer.decode(
-                best_tokens[:prefix_start_idx], skip_special_tokens=False
-            )
-        else:
-            text_before_prefix = ""
-
-        # Decode tokens from prefix start to end of sequence
-        text_from_prefix_start = tokenizer.decode(
-            best_tokens[prefix_start_idx:], skip_special_tokens=False
-        )
-
-        # The prefix is the part of text_from_prefix_start up to where payload starts
-        if payload_mask is not None and len(payload_mask) > 0:
-            payload_start_idx = payload_mask.min().item()
-            # Decode from prefix_end to payload_start to find the separator
-            text_between = tokenizer.decode(
-                best_tokens[prefix_end_idx:payload_start_idx], skip_special_tokens=False
-            )
-            # Decode just the prefix range
-            prefix_text = tokenizer.decode(
-                best_tokens[prefix_start_idx:prefix_end_idx], skip_special_tokens=False
-            )
-        else:
-            prefix_text = tokenizer.decode(
-                best_tokens[prefix_mask], skip_special_tokens=False
-            )
-    else:
-        prefix_text = ""
-        text_before_prefix = ""
-
-    # Find the continuous range for suffix
-    if suffix_mask is not None and len(suffix_mask) > 0:
-        suffix_start_idx = suffix_mask.min().item()
-        suffix_end_idx = suffix_mask.max().item() + 1
-
-        # Decode from suffix to get the actual suffix text in context
-        text_from_suffix = tokenizer.decode(
-            best_tokens[suffix_start_idx:], skip_special_tokens=False
-        )
-
-        # Find where suffix ends (before target or end of sequence)
-        target_mask = masks_data.get("target_mask")
-        if target_mask is not None and len(target_mask) > 0:
-            target_start_idx = target_mask.min().item()
-            # Decode between suffix and target
-            text_after_suffix = tokenizer.decode(
-                best_tokens[suffix_end_idx:target_start_idx], skip_special_tokens=False
-            )
-            # The suffix is from suffix_start to suffix_end
-            suffix_text = tokenizer.decode(
-                best_tokens[suffix_start_idx:suffix_end_idx], skip_special_tokens=False
-            )
-        else:
-            suffix_text = tokenizer.decode(
-                best_tokens[suffix_mask], skip_special_tokens=False
-            )
-    else:
-        suffix_text = ""
-
-    # Return the extracted strings
-    return prefix_text, suffix_text
-
-
 def extract_full_injection_string(
     tokenizer: transformers.AutoTokenizer,
     best_tokens: torch.Tensor,
@@ -534,49 +433,22 @@ def universal_rand_gcg_signal(
     return best_tokens_indices
 
 
-# TODO: which params are used? how do they have to be used?
-def _validate_parameters(
-    early_stop: bool,
-    compute_metrics: bool,
-    save_metrics_path: typing.Optional[str],
-) -> None:
-    """Validate parameter combinations for custom_gcg.
-
-    Args:
-        early_stop: Whether early stopping is enabled
-        compute_metrics: Whether metrics computation is enabled
-        save_metrics_path: Path to save metrics
-
-    Raises:
-        ValueError: If parameter combination is invalid
-    """
-    if early_stop and not compute_metrics:
-        raise ValueError("early_stop requires compute_metrics=True")
-
-    if compute_metrics and save_metrics_path is None:
-        raise ValueError("save_metrics_path must be provided when compute_metrics=True")
-
-
 # TODO: remove aggressive memory management
 def _setup_caching(
     to_cache_logits: bool,
     to_cache_attentions: bool,
-    aggressive_memory_management: bool = False,
 ) -> typing.Tuple[typing.Any, typing.Optional[typing.Any]]:
     """Setup caching for logprobs and attentions.
 
     Args:
         to_cache_logits: Whether to cache logprobs
         to_cache_attentions: Whether to cache attentions
-        aggressive_memory_management: Whether to use aggressive memory management (sync every batch)
 
     Returns:
         Tuple of (target_logprobs_function, att_cacher)
     """
     if to_cache_logits:
-        target_logprobs = attack_utility.CachedTargetLogprobs(
-            to_cache=True, aggressive_memory_management=aggressive_memory_management
-        )
+        target_logprobs = attack_utility.CachedTargetLogprobs(to_cache=True)
     else:
         target_logprobs = attack_utility.target_logprobs
 
@@ -1052,40 +924,29 @@ def custom_gcg(
     input_tokenized_data: typing.Dict,
     custom_gcg_hyperparams: typing.Dict,
     *,
-    early_stop,
     identical_outputs_before_stop,
     generation_config,
     to_cache_logits,
     to_cache_attentions,
+    early_stop: bool = True,
     clamp_tokens: bool = True,
-    ascii_only: bool = False,
+    ascii_only: bool = True,
     # Logging parameters
     run_id: typing.Optional[str] = None,
     debug_log_dir: typing.Optional[str] = None,
     metrics_dir: typing.Optional[str] = None,
-    # Metrics parameters (deprecated: use metrics_dir instead)
-    compute_metrics: bool = False,
     metrics_every_n_steps: int = 1,
-    save_metrics_path: typing.Optional[str] = None,
     # Decode-reencode validation
-    filter_tokenized_sequences: bool = False,
+    filter_tokenized_sequences: bool = True,
     # Exact target only mode: optimize to make model produce ONLY the target string followed by EOS token
     # (instead of just starting with the target string)
     exact_target_only: bool = False,
-    # Debug mode: print decoded text at each optimization step
-    debug_mode: bool = False,
     # Random seed for reproducibility
     seed: typing.Optional[int] = None,
-    # Aggressive memory management: sync and cleanup after every batch (slower but safer for low memory)
-    aggressive_memory_management: bool = False,
 ):
     # Setup logging infrastructure
     if run_id is None:
         run_id = f"{int(time.time())}"  # Use timestamp as default run_id
-
-    # Use save_metrics_path as metrics_dir if provided (backward compatibility)
-    if metrics_dir is None and save_metrics_path is not None:
-        metrics_dir = save_metrics_path
 
     debug_logger, step_metrics_path, metadata_path = setup_logging(
         run_id=run_id, debug_log_dir=debug_log_dir, metrics_dir=metrics_dir
@@ -1108,13 +969,8 @@ def custom_gcg(
         debug_logger.info(f"Random seed set to {seed}")
         metadata["seed"] = seed
 
-    # Validate parameters
-    _validate_parameters(early_stop, step_metrics_path is not None, save_metrics_path)
-
     # Setup caching
-    target_logprobs, att_cacher = _setup_caching(
-        to_cache_logits, to_cache_attentions, aggressive_memory_management
-    )
+    target_logprobs, att_cacher = _setup_caching(to_cache_logits, to_cache_attentions)
 
     # Extract tokens and masks
     input_tokens: torch.tensor = input_tokenized_data["tokens"]
@@ -1178,13 +1034,11 @@ def custom_gcg(
 
     step_num = 0
 
-    best_tokens_chunk = []
-    true_losses_chunk = []
-    substitution_data_chunk = []
-    current_best_true_loss_chunk = []
-    current_best_tokens_chunk = []
-    logprobs_chunk = []
-
+    assert isinstance(
+        custom_gcg_hyperparams["forward_eval_candidates"], int
+    ) or isinstance(custom_gcg_hyperparams["forward_eval_candidates"], str), (
+        "forward_eval_candidates has to be of type string or int"
+    )
     # Create progress bar for optimization steps
     pbar = tqdm(
         range(custom_gcg_hyperparams["max_steps"]),
@@ -1198,8 +1052,6 @@ def custom_gcg(
 
         # Add debug flag to signal_kwargs if debug mode is enabled
         current_signal_kwargs = signal_kwargs or {}
-        if debug_mode:
-            current_signal_kwargs["debug"] = True
 
         # Time signal function
         signal_start = time.time()
@@ -1225,9 +1077,7 @@ def custom_gcg(
                     best_tokens_indices, current_best_tokens, optim_mask
                 )
         else:
-            assert isinstance(custom_gcg_hyperparams["forward_eval_candidates"], int), (
-                "Only strings or ints"
-            )
+            # assertion checked earlier, type is int
             num_forward_evals = custom_gcg_hyperparams["forward_eval_candidates"]
             substitution_data = _generate_sampled_candidates(
                 best_tokens_indices,
@@ -1242,7 +1092,6 @@ def custom_gcg(
         del best_tokens_indices
         gc.collect()
         torch.cuda.empty_cache()
-        substitution_data_chunk.append(substitution_data)
         candidate_gen_end = time.time()
 
         # Time loss computation
@@ -1268,11 +1117,8 @@ def custom_gcg(
             total_candidates_invalid += num_invalid
         validation_end = time.time()
 
-        true_losses_chunk.append(true_losses)
         current_best_true_loss = true_losses[torch.argmin(true_losses)]
-        current_best_true_loss_chunk.append(current_best_true_loss)
         current_best_tokens = substitution_data[torch.argmin(true_losses)].clone()
-        current_best_tokens_chunk.append(current_best_tokens)
         best_output_sequences.append(current_best_tokens.clone())
 
         # Use true_loss_function for logprobs computation (same function used for selection)
@@ -1286,7 +1132,6 @@ def custom_gcg(
             **true_loss_kwargs,
         )
         logprobs = logprobs.item()
-        logprobs_chunk.append(logprobs)
         logprobs_sequences.append(logprobs)
 
         # Update progress bar with current loss
@@ -1300,7 +1145,7 @@ def custom_gcg(
 
         # Compute and save metrics if enabled
         metrics_start = time.time()
-        if compute_metrics and step_num % metrics_every_n_steps == 0:
+        if step_num % metrics_every_n_steps == 0:
             target_tokens = input_tokens[target_mask]
 
             # Compute step metrics
@@ -1625,11 +1470,6 @@ def weakly_universal_gcg(
             attack_utility.form_best_tokens_dict(input_tokenized_data_list)
         )
 
-    best_tokens_dicts_chunk = []
-    true_losses_chunk = []
-    current_best_true_loss_chunk = []
-    logprobs_chunk = []
-
     current_input_tokenized_data_list = input_tokenized_data_list
 
     # Create progress bar for universal optimization steps
@@ -1678,10 +1518,8 @@ def weakly_universal_gcg(
             step_num=step_num,
             **(true_loss_kwargs or {}),
         )
-        true_losses_chunk.append(true_losses)
         best_idx = torch.argmin(true_losses)
         best_loss = true_losses[best_idx]
-        current_best_true_loss_chunk.append(best_loss)
         best_tokens_dict = {
             "prefix_tokens": forward_eval_candidates[0][best_idx][
                 masks_data_list[0]["prefix_mask"]
@@ -1690,7 +1528,6 @@ def weakly_universal_gcg(
                 masks_data_list[0]["suffix_mask"]
             ],
         }
-        best_tokens_dicts_chunk.append(best_tokens_dict)
         best_tokens_dicts_list.append(best_tokens_dict)
         average_logprobs = average_target_logprobs(
             models,
@@ -1699,7 +1536,6 @@ def weakly_universal_gcg(
             masks_data_list,
             debug_logger,
         )
-        logprobs_chunk.append(average_logprobs.item())
         average_logprobs_list.append(average_logprobs.item())
         current_input_tokenized_data_list = attack_utility.update_all_tokens(
             best_tokens_dict, current_input_tokenized_data_list
@@ -1713,14 +1549,6 @@ def weakly_universal_gcg(
                 "Best": f"{min(average_logprobs_list):.4f}",
             }
         )
-
-        if (step_num + 1) % 10 == 0:
-            # Chunk data was for old logging system - no longer needed
-
-            true_losses_chunk = []
-            current_best_true_loss_chunk = []
-            logprobs_chunk = []
-            best_tokens_dicts_chunk = []
 
         step_end_state = on_step_end(
             models,

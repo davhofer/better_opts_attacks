@@ -1215,17 +1215,12 @@ class CachedTargetLogprobs:
                             input_ids=input_ids_sliced_batch.to(model.device),
                             past_key_values=dynamic_cache,
                         ).logits
-                        # If aggressive memory management, use 50% of capacity for safety
-                        # Otherwise use 100% of the working batch size
-                        if self.aggressive_memory_management:
-                            self.batch_size = batch_size // 2
-                        else:
-                            self.batch_size = batch_size
+                        # use 100% of the working batch size
+                        self.batch_size = batch_size
 
                         # Log the selected batch size
                         print(
-                            f"CachedTargetLogprobs: Using batch_size={self.batch_size} "
-                            f"(aggressive_memory_management={self.aggressive_memory_management})"
+                            f"CachedTargetLogprobs: Using batch_size={self.batch_size}"
                         )
 
                         for pair in batched_kv_cache:
@@ -1243,9 +1238,8 @@ class CachedTargetLogprobs:
                         print("FAILED WITH BATCH SIZE", batch_size)
                         batch_size //= 2
 
-    def __init__(self, to_cache=True, aggressive_memory_management=False):
+    def __init__(self, to_cache=True):
         self.to_cache = to_cache
-        self.aggressive_memory_management = aggressive_memory_management
         self.is_inited = False
         self.cache_object = None
         self.batch_size = None
@@ -1303,8 +1297,8 @@ class CachedTargetLogprobs:
                     del pair
                 del new_legacy_cache, dynamic_cache, output
 
-                # Only synchronize if aggressive_memory_management is enabled, or every 4th iteration
-                if self.aggressive_memory_management or batch_idx % 4 == 0:
+                # Only synchronize every 4th iteration
+                if batch_idx % 4 == 0:
                     torch.cuda.synchronize()
                     gc.collect()
                     torch.cuda.empty_cache()
