@@ -8,9 +8,8 @@ import copy
 import peft
 import threading
 import queue
+import logging
 from concurrent.futures import ThreadPoolExecutor
-
-from betteroptsattack.utils import experiment_logger as experiment_logger
 
 
 def get_nonascii_toks(tokenizer, device="cpu"):
@@ -969,7 +968,7 @@ def target_logprobs(
     input_points: torch.tensor,
     masks_data: typing.Dict[str, torch.tensor],
     target_tokens: torch.tensor,
-    logger: experiment_logger.ExperimentLogger = None,
+    debug_logger: logging.Logger = None,
     **kwargs,
 ):
     target_mask = masks_data["target_mask"]
@@ -977,9 +976,9 @@ def target_logprobs(
     for logit_piece in bulk_logits_iter(model, input_points):
         # Add NaN/Inf check for logits
         if torch.isnan(logit_piece).any() or torch.isinf(logit_piece).any():
-            if logger:
-                logger.log_event(
-                    "WARNING: NaN or Inf detected in logits during target_logprobs"
+            if debug_logger:
+                debug_logger.warning(
+                    "NaN or Inf detected in logits during target_logprobs"
                 )
             # Return high loss values to discourage this path
             batch_size = logit_piece.shape[0]
@@ -995,8 +994,8 @@ def target_logprobs(
 
             # Check for NaN in loss
             if torch.isnan(loss_tensor).any():
-                if logger:
-                    logger.log_event("WARNING: NaN detected in loss computation")
+                if debug_logger:
+                    debug_logger.warning("NaN detected in loss computation")
                 # Replace NaN with high loss value
                 loss_tensor = torch.where(
                     torch.isnan(loss_tensor),
@@ -1035,7 +1034,7 @@ def generate_valid_input_tokenized_data(
     input_template,
     target_output_str,
     init_config,
-    logger: experiment_logger.ExperimentLogger,
+    debug_logger: logging.Logger = None,
     *,
     max_attempts=10000,
 ):
@@ -1091,7 +1090,7 @@ def generate_valid_input_tokenized_data(
             break
         num_init_tries += 1
 
-    logger.log(new_init_config, num_init_tries=num_init_tries)
+    # Init config no longer logged
     return input_tokenized_data, new_init_config
 
 
@@ -1100,7 +1099,7 @@ def generate_bulk_valid_input_tokenized_data(
     input_templates,
     target_output_str,
     init_config,
-    logger: experiment_logger.ExperimentLogger,
+    debug_logger: logging.Logger = None,
     *,
     max_attempts=10000,
 ):
@@ -1159,7 +1158,7 @@ def generate_bulk_valid_input_tokenized_data(
             break
         num_init_tries += 1
 
-    logger.log(new_init_config, num_init_tries=num_init_tries)
+    # Init config no longer logged
     return input_tokenized_data_list, new_init_config
 
 
@@ -1382,7 +1381,7 @@ class CachedBulkForward:
         self.cache_object = None
         self.batch_size = None
 
-    def __call__(self, model, tokenizer, input_points, masks_data, logger, **kwargs):
+    def __call__(self, model, tokenizer, input_points, masks_data, **kwargs):
         if not self.is_inited:
             input_tokenized_data = {"tokens": input_points[0], "masks": masks_data}
             self._cache_init(model, tokenizer, input_tokenized_data)
@@ -1732,7 +1731,8 @@ class CachedAverageLogprobs:
                     MODEL_EXCEPTION_STRING = (
                         f"Model {idx} generated an exception: {exc}"
                     )
-                    logger.log(MODEL_EXCEPTION_STRING)
+                    if logger:
+                        logger.error(f"Model exception: {MODEL_EXCEPTION_STRING}")
                     results.append((idx, None))  # or handle differently
                     raise RuntimeError(MODEL_EXCEPTION_STRING)
 

@@ -29,7 +29,7 @@ except ImportError:
 
 # Import package modules
 from betteroptsattack.algorithms import gcg
-from betteroptsattack.utils import attack_utility, experiment_logger
+from betteroptsattack.utils import attack_utility
 from betteroptsattack.test_samples import (
     ALL_SAMPLES,
     get_samples_by_level,
@@ -235,7 +235,6 @@ def run_enhanced_gcg_attack(
     sample: Dict,
     args,
     exp_dir: Path,
-    logger: experiment_logger.ExperimentLogger,
 ) -> Dict:
     """
     Run GCG attack using the enhanced custom_gcg implementation.
@@ -264,20 +263,16 @@ def run_enhanced_gcg_attack(
         tokenizer=tokenizer,
         input_tokenized_data=input_tokenized_data,
         custom_gcg_hyperparams=gcg_hyperparams,
-        logger=logger,
+        # Logging parameters
+        run_id=f"sample_{sample['id']}",
+        debug_log_dir=str(exp_dir / "debug_logs"),
+        metrics_dir=str(exp_dir / "metrics"),
         # Standard parameters
-        eval_every_step=True,
         early_stop=args.early_stop,
-        eval_initial=True,
         identical_outputs_before_stop=1,
         generation_config=attack_utility.DEFAULT_TEXT_GENERATION_CONFIG,
         to_cache_logits=False,
         to_cache_attentions=False,
-        # Enhanced metrics parameters
-        enable_enhanced_metrics=True,
-        save_metrics_path=str(metrics_file),
-        check_extended_metrics_every_n_steps=args.check_metrics_every,
-        save_adv_string_every_n_steps=args.save_adv_every,
     )
 
     attack_time = time.time() - start_time
@@ -365,8 +360,7 @@ def main():
     exp_dir = Path(args.output_dir) / model_dir_name / exp_name
     exp_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create logger
-    logger = experiment_logger.ExperimentLogger(str(exp_dir / "logs"))
+    # Logger setup moved to custom_gcg call via run_id and log directories
 
     # Results collection
     all_results = {
@@ -390,7 +384,7 @@ def main():
         try:
             # Run attack
             result = run_enhanced_gcg_attack(
-                model, tokenizer, sample, args, exp_dir, logger
+                model, tokenizer, sample, args, exp_dir
             )
 
             # Prepare sample result

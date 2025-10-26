@@ -21,7 +21,6 @@ from betteroptsattack.utils.attack_utility import (
     ADV_SUFFIX_INDICATOR,
     DEFAULT_TEXT_GENERATION_CONFIG,
 )
-from betteroptsattack.utils.experiment_logger import ExperimentLogger
 
 __all__ = [
     "custom_gcg",
@@ -30,7 +29,6 @@ __all__ = [
     "initialize_adversarial_strings",
     "string_masks_with_retry",
     "target_logprobs",
-    "ExperimentLogger",
     "ADV_PREFIX_INDICATOR",
     "ADV_SUFFIX_INDICATOR",
     "DEFAULT_TEXT_GENERATION_CONFIG",
