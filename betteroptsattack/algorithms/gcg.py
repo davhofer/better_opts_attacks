@@ -919,7 +919,25 @@ def custom_gcg(
     exact_target_only: bool = False,
     # Random seed for reproducibility
     seed: typing.Optional[int] = None,
-):
+) -> typing.Tuple[str, typing.Dict, typing.List[float], typing.List[torch.Tensor]]:
+    """
+    Run GCG optimization attack.
+
+    Returns:
+        Tuple of (best_injection, metrics, logprobs_sequences, best_output_sequences) where:
+        - best_injection: The optimized injection string
+        - metrics: Dict containing:
+            - best_step: Step number where best result was found
+            - best_loss: Loss value of best result
+            - argmax_matches_target: Whether argmax predictions match target
+            - generation_starts_with_target: Whether generation starts with target
+            - generated_text: Generated text from best injection
+            - total_steps: Total number of optimization steps completed
+            - total_runtime: Total optimization time in seconds
+            - max_memory_reserved: Peak GPU memory reserved (GB) across all steps
+        - logprobs_sequences: List of loss values for each step
+        - best_output_sequences: List of best token sequences for each step
+    """
     timestamp_start = time.time()
 
     # Setup logging infrastructure
@@ -999,6 +1017,9 @@ def custom_gcg(
         log_step_metric(step_metrics_path, initial_metric)
 
     step_num = 0
+
+    # Track global maximum memory reserved across all steps
+    global_max_memory_reserved = 0.0
 
     # Create progress bar for optimization steps
     pbar = tqdm(
@@ -1139,6 +1160,12 @@ def custom_gcg(
             )
             early_stop_end = time.time()
 
+            # Update global max memory reserved
+            if "max_memory_reserved" in step_metric:
+                global_max_memory_reserved = max(
+                    global_max_memory_reserved, step_metric["max_memory_reserved"]
+                )
+
             # Save metrics (now includes early_stop flag if applicable)
             log_step_metric(step_metrics_path, step_metric)
 
@@ -1197,16 +1224,21 @@ def custom_gcg(
     best_injection = extract_full_injection_string(tokenizer, best_tokens, masks_data)
     debug_logger.info(f"Global best injection string: {best_injection}")
 
-    # return best_injection, best_step, best_loss, best_argmax_matches_target, best_generation_starts_with_target, best_generated_text, total_steps, total_runtime, logprobs_sequences, best_output_sequences
+    # Prepare metrics dictionary
+    metrics = {
+        "best_step": best_idx,
+        "best_loss": best_loss,
+        "argmax_matches_target": best_metric["argmax_matches_target"],
+        "generation_starts_with_target": best_metric["generation_starts_with_target"],
+        "generated_text": best_generated_text,
+        "total_steps": step_num + 1,
+        "total_runtime": time.time() - timestamp_start,
+        "max_memory_reserved": global_max_memory_reserved,
+    }
+
     return (
         best_injection,
-        best_idx,
-        best_loss,
-        best_metric["argmax_matches_target"],
-        best_metric["generation_starts_with_target"],
-        best_generated_text,
-        step_num + 1,
-        time.time() - timestamp_start,
+        metrics,
         logprobs_sequences,
         best_output_sequences,
     )
