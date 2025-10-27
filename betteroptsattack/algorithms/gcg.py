@@ -778,6 +778,8 @@ def _compute_step_metrics(
         "generation_starts_with_target": starts_with_target,
         "generated_text": generated_text[:100],
         "time_elapsed": time.time() - step_start_time,
+        "max_memory_reserved": torch.cuda.max_memory_reserved(device=model.device)
+        / 1024**3,
     }
 
     return step_metric, generated_text
@@ -1009,6 +1011,9 @@ def custom_gcg(
     for step_num in pbar:
         step_start_time = time.time()
 
+        # Reset peak memory stats at start of each iteration
+        torch.cuda.reset_peak_memory_stats(device=model.device)
+
         # Add debug flag to signal_kwargs if debug mode is enabled
         current_signal_kwargs = signal_kwargs or {}
 
@@ -1027,6 +1032,10 @@ def custom_gcg(
             **current_signal_kwargs,
         )
         signal_end = time.time()
+
+        # Clear model gradients and ensure GPU operations complete
+        model.zero_grad(set_to_none=True)
+        torch.cuda.synchronize()
 
         # Generate candidate substitutions
         candidate_gen_start = time.time()
