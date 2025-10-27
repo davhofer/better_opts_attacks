@@ -31,17 +31,9 @@ GCG_LOSS_FUNCTION = attack_utility.UNREDUCED_CE_LOSS
 #    - Format: {"step": 10, "loss": 0.523, ...} (step=-1 for initial, step>=0 for iterations)
 #    - Usage: log_step_metric(step_metrics_path, {"step": 10, ...})
 #
-# 3. METADATA (JSON):
-#    - Logs run-level metadata (hyperparams, final results, etc.)
-#    - File: metadata_{run_id}.json
-#    - Format: Single JSON object with all metadata
-#    - Usage: metadata["key"] = value; save_metadata(metadata_path, metadata)
-#
 # Example usage in custom_gcg():
 #   - debug_logger.info(f"Starting optimization with {num_steps} steps")
 #   - log_step_metric(step_metrics_path, {"step": i, "loss": loss})
-#   - metadata["final_loss"] = final_loss
-#   - save_metadata(metadata_path, metadata)  # At end of function
 # =============================================================================
 
 
@@ -56,15 +48,14 @@ def setup_logging(
     Creates:
     - Debug logger: Writes to debug_{run_id}.log
     - Step metrics file: step_metrics_{run_id}.jsonl (append mode)
-    - Metadata file: metadata_{run_id}.json (will be written at end)
 
     Args:
         run_id: Unique identifier for this run
         debug_log_dir: Directory for debug logs (or None to disable)
-        metrics_dir: Directory for metrics and metadata files (or None to disable)
+        metrics_dir: Directory for metrics
 
     Returns:
-        Tuple of (debug_logger, step_metrics_path, metadata_path)
+        Tuple of (debug_logger, step_metrics_path)
     """
     # Setup debug logger
     debug_logger = logging.getLogger(f"gcg.debug.{run_id}")
@@ -85,15 +76,13 @@ def setup_logging(
 
     # Setup metrics file paths
     step_metrics_path = None
-    metadata_path = None
 
     if metrics_dir:
         metrics_path = Path(metrics_dir)
         metrics_path.mkdir(parents=True, exist_ok=True)
         step_metrics_path = metrics_path / f"step_metrics_{run_id}.jsonl"
-        metadata_path = metrics_path / f"metadata_{run_id}.json"
 
-    return debug_logger, step_metrics_path, metadata_path
+    return debug_logger, step_metrics_path
 
 
 def log_step_metric(step_metrics_path: typing.Optional[Path], metric_dict: dict):
@@ -110,21 +99,6 @@ def log_step_metric(step_metrics_path: typing.Optional[Path], metric_dict: dict)
     with open(step_metrics_path, "a") as f:
         json.dump(metric_dict, f)
         f.write("\n")
-
-
-def save_metadata(metadata_path: typing.Optional[Path], metadata: dict):
-    """
-    Save metadata dictionary to JSON file.
-
-    Args:
-        metadata_path: Path to metadata file (or None to skip)
-        metadata: Dictionary containing all metadata
-    """
-    if metadata_path is None:
-        return
-
-    with open(metadata_path, "w") as f:
-        json.dump(metadata, f, indent=2)
 
 
 def check_argmax_match(
@@ -944,19 +918,15 @@ def custom_gcg(
     # Random seed for reproducibility
     seed: typing.Optional[int] = None,
 ):
+    timestamp_start = time.time()
+
     # Setup logging infrastructure
     if run_id is None:
-        run_id = f"{int(time.time())}"  # Use timestamp as default run_id
+        run_id = f"{int(timestamp_start)}"  # Use timestamp as default run_id
 
-    debug_logger, step_metrics_path, metadata_path = setup_logging(
+    debug_logger, step_metrics_path = setup_logging(
         run_id=run_id, debug_log_dir=debug_log_dir, metrics_dir=metrics_dir
     )
-
-    # Metadata dictionary to be written at end
-    metadata = {
-        "run_id": run_id,
-        "timestamp_start": time.time(),
-    }
 
     # Set random seeds for reproducibility
     if seed is not None:
@@ -967,7 +937,6 @@ def custom_gcg(
             torch.cuda.manual_seed(seed)
             torch.cuda.manual_seed_all(seed)
         debug_logger.info(f"Random seed set to {seed}")
-        metadata["seed"] = seed
 
     # Setup caching
     target_logprobs, att_cacher = _setup_caching(to_cache_logits, to_cache_attentions)
@@ -1121,17 +1090,8 @@ def custom_gcg(
         current_best_tokens = substitution_data[torch.argmin(true_losses)].clone()
         best_output_sequences.append(current_best_tokens.clone())
 
-        # Use true_loss_function for logprobs computation (same function used for selection)
-        logprobs = true_loss_function(
-            model,
-            tokenizer,
-            torch.unsqueeze(current_best_tokens, 0),
-            masks_data,
-            input_tokens[target_mask],
-            debug_logger=debug_logger,
-            **true_loss_kwargs,
-        )
-        logprobs = logprobs.item()
+        # Use the already computed loss for the best candidate (no need to recompute)
+        logprobs = current_best_true_loss.item()
         logprobs_sequences.append(logprobs)
 
         # Update progress bar with current loss
@@ -1196,8 +1156,6 @@ def custom_gcg(
     # Close progress bar
     pbar.close()
 
-    # Successive outputs tracked in metadata
-
     # Log decode-reencode validation statistics
     _log_final_statistics(
         filter_tokenized_sequences,
@@ -1206,16 +1164,55 @@ def custom_gcg(
         debug_logger,
     )
 
-    # Save final metadata
-    metadata["timestamp_end"] = time.time()
-    metadata["total_steps"] = step_num + 1
-    metadata["final_success"] = (
-        successive_correct_outputs >= identical_outputs_before_stop
-    )
-    save_metadata(metadata_path, metadata)
+    # Find and evaluate the global best sequence across all steps
+    logprobs_tensor = torch.tensor(logprobs_sequences)
+    best_idx = torch.argmin(logprobs_tensor).item()
+    best_tokens = best_output_sequences[best_idx]
+    best_loss = logprobs_sequences[best_idx]
 
-    # Return results
-    return logprobs_sequences, best_output_sequences
+    debug_logger.info(
+        f"Global best found at index {best_idx} with loss {best_loss:.4f}"
+    )
+
+    # Compute metrics for the global best sequence
+    target_tokens = input_tokens[target_mask]
+    best_metric, best_generated_text = _compute_step_metrics(
+        model,
+        tokenizer,
+        best_tokens,
+        masks_data,
+        target_tokens,
+        eval_input_mask,
+        generation_config,
+        best_loss,
+        step_num=best_idx,  # Use index as step identifier
+        step_start_time=time.time(),  # Placeholder, time_elapsed won't be meaningful
+    )
+
+    # Log the global best metrics
+    debug_logger.info(
+        f"Global best metrics: argmax_match = {best_metric['argmax_matches_target']}, "
+        f"generation_starts_with_target = {best_metric['generation_starts_with_target']}"
+    )
+    debug_logger.info(f"Generated text (first 200 chars): {best_generated_text[:200]}")
+
+    # Extract and log the full injection string for the global best
+    best_injection = extract_full_injection_string(tokenizer, best_tokens, masks_data)
+    debug_logger.info(f"Global best injection string: {best_injection}")
+
+    # return best_injection, best_step, best_loss, best_argmax_matches_target, best_generation_starts_with_target, best_generated_text, total_steps, total_runtime, logprobs_sequences, best_output_sequences
+    return (
+        best_injection,
+        best_idx,
+        best_loss,
+        best_metric["argmax_matches_target"],
+        best_metric["generation_starts_with_target"],
+        best_generated_text,
+        step_num + 1,
+        time.time() - timestamp_start,
+        logprobs_sequences,
+        best_output_sequences,
+    )
 
 
 def average_target_logprobs_signal(
