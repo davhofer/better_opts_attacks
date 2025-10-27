@@ -675,7 +675,7 @@ def _evaluate_initial_state(
         torch.unsqueeze(current_best_tokens, 0),
         masks_data,
         target_tokens,
-        debug_logger=debug_logger,
+        debug_logger,
         **true_loss_kwargs,
     )
     initial_logprobs = initial_logprobs.item()
@@ -1066,7 +1066,7 @@ def custom_gcg(
             substitution_data,
             masks_data,
             input_tokens[target_mask],
-            debug_logger=debug_logger,
+            debug_logger,
             **true_loss_kwargs,
         )
         loss_comp_end = time.time()
