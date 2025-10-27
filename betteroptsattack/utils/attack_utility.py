@@ -207,7 +207,6 @@ def string_masks_with_retry(
     adv_pre_init: str,
     adv_suf_init: str,
     target_string: str,
-    logger: logging.Logger,
     prefix_placeholder: str = "<ADV_PREFIX>",
     suffix_placeholder: str = "<ADV_SUFFIX>",
     max_retries: int = 10,
@@ -231,26 +230,14 @@ def string_masks_with_retry(
             )
 
             # Check if string_masks returned None (tokenization failed)
-            if result is None:
-                logger.info(
-                    f"Attempt {attempt + 1}: Tokenization failed, regenerating initialization strings..."
-                )
-            elif "masks" in result:
+            if result is not None and "masks" in result:
                 masks = result["masks"]
                 # Verify we have non-empty optimization mask
                 if len(masks.get("optim_mask", [])) > 0:
                     return result
-                else:
-                    print(
-                        f"Attempt {attempt + 1}: Empty optimization mask, regenerating..."
-                    )
-            else:
-                print(
-                    f"Attempt {attempt + 1}: Invalid result structure, regenerating..."
-                )
 
         except Exception as e:
-            print(f"Attempt {attempt + 1} failed with exception: {e}")
+            pass
 
         # Generate new random initialization strings for next attempt
         if adv_pre_init:  # Only regenerate if it was provided
@@ -261,9 +248,9 @@ def string_masks_with_retry(
     # Final fallback: use very simple initialization
     print("All attempts failed, using fallback initialization")
     if adv_pre_init:
-        adv_pre_init = "a " * (len(adv_pre_init) // 2)
+        adv_pre_init = "x " * (len(adv_pre_init) // 2)
     if adv_suf_init:
-        adv_suf_init = "a " * (len(adv_suf_init) // 2)
+        adv_suf_init = "x " * (len(adv_suf_init) // 2)
 
     return string_masks(
         tokenizer=tokenizer,
