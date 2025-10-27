@@ -207,6 +207,7 @@ def string_masks_with_retry(
     adv_pre_init: str,
     adv_suf_init: str,
     target_string: str,
+    logger: logging.Logger,
     prefix_placeholder: str = "<ADV_PREFIX>",
     suffix_placeholder: str = "<ADV_SUFFIX>",
     max_retries: int = 10,
@@ -231,7 +232,7 @@ def string_masks_with_retry(
 
             # Check if string_masks returned None (tokenization failed)
             if result is None:
-                print(
+                logger.info(
                     f"Attempt {attempt + 1}: Tokenization failed, regenerating initialization strings..."
                 )
             elif "masks" in result:
@@ -968,7 +969,7 @@ def target_logprobs(
     input_points: torch.tensor,
     masks_data: typing.Dict[str, torch.tensor],
     target_tokens: torch.tensor,
-    debug_logger: logging.Logger = None,
+    debug_logger: logging.Logger,
     **kwargs,
 ):
     target_mask = masks_data["target_mask"]

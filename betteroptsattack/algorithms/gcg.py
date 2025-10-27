@@ -686,13 +686,6 @@ def _evaluate_initial_state(
     # Generate initial output
     input_tokens_for_generation = current_best_tokens[eval_input_mask]
 
-    print(f"{'=' * 80}")
-    print("TOKENS SEEN DURING OPTIMIZATION (AT GENERATION EVAL):")
-    toks = input_tokens_for_generation.tolist()
-    for i in range(0, len(toks), 10):
-        print(toks[i : i + 10])
-    print(f"{'=' * 80}")
-
     generated_output_tokens = model.generate(
         torch.unsqueeze(input_tokens_for_generation, dim=0).to(model.device),
         attention_mask=torch.unsqueeze(
