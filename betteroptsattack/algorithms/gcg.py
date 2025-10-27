@@ -407,7 +407,6 @@ def universal_rand_gcg_signal(
     return best_tokens_indices
 
 
-# TODO: remove aggressive memory management
 def _setup_caching(
     to_cache_logits: bool,
     to_cache_attentions: bool,
@@ -896,7 +895,6 @@ def custom_gcg(
     model: transformers.AutoModelForCausalLM,
     tokenizer: transformers.AutoTokenizer,
     input_tokenized_data: typing.Dict,
-    custom_gcg_hyperparams: typing.Dict,
     *,
     identical_outputs_before_stop,
     generation_config,
@@ -905,6 +903,15 @@ def custom_gcg(
     early_stop: bool = True,
     clamp_tokens: bool = True,
     ascii_only: bool = True,
+    # GCG parameters
+    max_steps: int = 500,
+    forward_eval_candidates: str | int = 256,
+    topk: int = 512,
+    signal_function: typing.Optional[typing.Callable] = None,
+    true_loss_function: typing.Optional[typing.Callable] = None,
+    substitution_validity_function: typing.Optional[typing.Callable] = None,
+    signal_kwargs=None,
+    true_loss_kwargs=None,
     # Logging parameters
     run_id: typing.Optional[str] = None,
     debug_log_dir: typing.Optional[str] = None,
@@ -957,15 +964,10 @@ def custom_gcg(
         debug_logger,
     )
 
-    signal_function = custom_gcg_hyperparams.get("signal_function", og_gcg_signal)
-    true_loss_function = custom_gcg_hyperparams.get(
-        "true_loss_function", target_logprobs
-    )
-    substitution_validity_function = custom_gcg_hyperparams.get(
-        "substitution_validity_function", None
-    )
-    signal_kwargs = custom_gcg_hyperparams.get("signal_kwargs", None)
-    true_loss_kwargs = custom_gcg_hyperparams.get("true_loss_kwargs", None)
+    if signal_function is None:
+        signal_function = og_gcg_signal
+    if true_loss_function is None:
+        true_loss_function = target_logprobs
 
     current_best_tokens = input_tokens.clone()
     best_output_sequences = []
@@ -1003,14 +1005,9 @@ def custom_gcg(
 
     step_num = 0
 
-    assert isinstance(
-        custom_gcg_hyperparams["forward_eval_candidates"], int
-    ) or isinstance(custom_gcg_hyperparams["forward_eval_candidates"], str), (
-        "forward_eval_candidates has to be of type string or int"
-    )
     # Create progress bar for optimization steps
     pbar = tqdm(
-        range(custom_gcg_hyperparams["max_steps"]),
+        range(max_steps),
         desc="GCG Optimization",
         unit="step",
         disable=False,
@@ -1029,7 +1026,7 @@ def custom_gcg(
             tokenizer,
             current_best_tokens,
             masks_data,
-            custom_gcg_hyperparams["topk"],
+            topk,
             debug_logger,
             step_num=step_num,
             clamp_tokens=clamp_tokens,
@@ -1040,19 +1037,17 @@ def custom_gcg(
 
         # Generate candidate substitutions
         candidate_gen_start = time.time()
-        if isinstance(custom_gcg_hyperparams["forward_eval_candidates"], str):
-            if custom_gcg_hyperparams["forward_eval_candidates"] == "all":
+        if isinstance(forward_eval_candidates, str):
+            if forward_eval_candidates == "all":
                 substitution_data = _generate_all_candidates(
                     best_tokens_indices, current_best_tokens, optim_mask
                 )
         else:
-            # assertion checked earlier, type is int
-            num_forward_evals = custom_gcg_hyperparams["forward_eval_candidates"]
             substitution_data = _generate_sampled_candidates(
                 best_tokens_indices,
                 current_best_tokens,
                 optim_mask,
-                num_forward_evals,
+                forward_eval_candidates,
                 substitution_validity_function,
                 tokenizer,
                 masks_data,
