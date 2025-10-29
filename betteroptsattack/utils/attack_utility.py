@@ -1253,19 +1253,15 @@ class CachedTargetLogprobs:
         target_mask = masks_data["target_mask"]
         data_split = torch.split(input_points_sliced, self.batch_size, dim=0)
         losses_list = []
-        with torch.inference_mode():
+        with torch.no_grad():
             for batch_idx, data_batch in enumerate(data_split):
                 new_legacy_cache = []
                 for key_cache, value_cache in self.cache_object["past_key_values"]:
                     # Memory optimization: .clone() removed to save 30-50% GPU memory during loss computation
-                    # Safe in inference_mode context where in-place operations on inference tensors are allowed
-                    # This fixes the "Inplace update to inference tensor outside InferenceMode" error with Gemma 3
                     new_legacy_cache.append(
                         (
-                            key_cache.expand(data_batch.shape[0], -1, -1, -1).detach(),
-                            value_cache.expand(
-                                data_batch.shape[0], -1, -1, -1
-                            ).detach(),
+                            key_cache.expand(data_batch.shape[0], -1, -1, -1),
+                            value_cache.expand(data_batch.shape[0], -1, -1, -1),
                         )
                     )
 

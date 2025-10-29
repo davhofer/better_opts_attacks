@@ -686,13 +686,14 @@ def _evaluate_initial_state(
     # Generate initial output
     input_tokens_for_generation = current_best_tokens[eval_input_mask]
 
-    generated_output_tokens = model.generate(
-        torch.unsqueeze(input_tokens_for_generation, dim=0).to(model.device),
-        attention_mask=torch.unsqueeze(
-            torch.ones(input_tokens_for_generation.shape), dim=0
-        ).to(model.device),
-        **generation_config,
-    )
+    with torch.inference_mode():
+        generated_output_tokens = model.generate(
+            torch.unsqueeze(input_tokens_for_generation, dim=0).to(model.device),
+            attention_mask=torch.unsqueeze(
+                torch.ones(input_tokens_for_generation.shape), dim=0
+            ).to(model.device),
+            **generation_config,
+        )
     input_length = len(input_tokens_for_generation)
     generated_output_string = tokenizer.batch_decode(
         generated_output_tokens[:, input_length:]
