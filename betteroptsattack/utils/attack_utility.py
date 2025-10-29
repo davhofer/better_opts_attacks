@@ -1262,8 +1262,10 @@ class CachedTargetLogprobs:
                     # This fixes the "Inplace update to inference tensor outside InferenceMode" error with Gemma 3
                     new_legacy_cache.append(
                         (
-                            key_cache.expand(data_batch.shape[0], -1, -1, -1),
-                            value_cache.expand(data_batch.shape[0], -1, -1, -1),
+                            key_cache.expand(data_batch.shape[0], -1, -1, -1).detach(),
+                            value_cache.expand(
+                                data_batch.shape[0], -1, -1, -1
+                            ).detach(),
                         )
                     )
 
