@@ -755,7 +755,7 @@ def _compute_step_metrics(
     )
 
     # Generate text to check if it starts with target
-    with torch.no_grad():
+    with torch.inference_mode():
         input_tokens_for_generation = current_best_tokens[eval_input_mask]
         generated_tokens = model.generate(
             torch.unsqueeze(input_tokens_for_generation, dim=0).to(model.device),
