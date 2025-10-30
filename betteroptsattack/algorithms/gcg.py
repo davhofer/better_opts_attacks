@@ -368,7 +368,9 @@ def rand_gcg_signal(
     gcg_topk: int,
     debug_logger: logging.Logger,
     *,
+    step_num: int = 0,
     clamp_tokens: bool = True,
+    ascii_only: bool = False,
     **kwargs,
 ):
     optim_mask: torch.tensor = masks_data["optim_mask"]
@@ -377,10 +379,38 @@ def rand_gcg_signal(
     vocab_size = model.get_input_embeddings().weight.shape[0]
 
     # Note: rand_gcg_signal doesn't use input_points, so no need to check for token clamping
-    # This is a random signal function
-    best_tokens_indices = torch.stack(
-        [torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])]
-    )
+    # This is a random signal function that samples from valid tokens only
+
+    # Create a mask for valid tokens (start with all tokens valid)
+    device = model.device
+    valid_mask = torch.ones(vocab_size, dtype=torch.bool, device=device)
+
+    # Always exclude special tokens from being selected
+    special_toks = attack_utility.get_special_toks(tokenizer, device=device)
+    if len(special_toks) > 0:
+        valid_mask[special_toks] = False
+
+    # Apply ASCII-only filtering if requested (in addition to special token filtering)
+    if ascii_only:
+        nonascii_toks = attack_utility.get_nonascii_toks(tokenizer, device=device)
+        valid_mask[nonascii_toks] = False
+
+    # Get indices of valid tokens
+    valid_indices = torch.where(valid_mask)[0]
+
+    # Check if we have enough valid tokens
+    actual_topk = min(gcg_topk, len(valid_indices))
+    if actual_topk < gcg_topk:
+        debug_logger.warning(
+            f"Step {step_num}: Only {actual_topk} valid tokens available (requested {gcg_topk})"
+        )
+
+    # Generate random indices by randomly permuting valid token indices
+    best_tokens_indices = torch.stack([
+        valid_indices[torch.randperm(len(valid_indices), device=device)[:actual_topk]]
+        for _ in range(optim_mask.shape[0])
+    ])
+
     return best_tokens_indices
 
 
@@ -389,9 +419,11 @@ def universal_rand_gcg_signal(
     tokenizer,
     input_tokenized_data_list,
     gcg_topk,
-    logger,
+    debug_logger,
     *,
+    step_num: int = 0,
     clamp_tokens: bool = True,
+    ascii_only: bool = False,
     **kwargs,
 ):
     optim_mask = input_tokenized_data_list[0]["masks"]["optim_mask"]
@@ -400,10 +432,38 @@ def universal_rand_gcg_signal(
     vocab_size = models[0].get_input_embeddings().weight.shape[0]
 
     # Note: universal_rand_gcg_signal doesn't use input_points, so no need to check for token clamping
-    # This is a random signal function
-    best_tokens_indices = torch.stack(
-        [torch.randperm(vocab_size)[:gcg_topk] for _ in range(optim_mask.shape[0])]
-    )
+    # This is a random signal function that samples from valid tokens only
+
+    # Create a mask for valid tokens (start with all tokens valid)
+    device = models[0].device
+    valid_mask = torch.ones(vocab_size, dtype=torch.bool, device=device)
+
+    # Always exclude special tokens from being selected
+    special_toks = attack_utility.get_special_toks(tokenizer, device=device)
+    if len(special_toks) > 0:
+        valid_mask[special_toks] = False
+
+    # Apply ASCII-only filtering if requested (in addition to special token filtering)
+    if ascii_only:
+        nonascii_toks = attack_utility.get_nonascii_toks(tokenizer, device=device)
+        valid_mask[nonascii_toks] = False
+
+    # Get indices of valid tokens
+    valid_indices = torch.where(valid_mask)[0]
+
+    # Check if we have enough valid tokens
+    actual_topk = min(gcg_topk, len(valid_indices))
+    if actual_topk < gcg_topk:
+        debug_logger.warning(
+            f"Step {step_num}: Only {actual_topk} valid tokens available (requested {gcg_topk})"
+        )
+
+    # Generate random indices by randomly permuting valid token indices
+    best_tokens_indices = torch.stack([
+        valid_indices[torch.randperm(len(valid_indices), device=device)[:actual_topk]]
+        for _ in range(optim_mask.shape[0])
+    ])
+
     return best_tokens_indices
 
 
