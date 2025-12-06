@@ -8,6 +8,7 @@ import gc
 import json
 import time
 import logging
+import inspect
 from pathlib import Path
 from tqdm import tqdm
 
@@ -406,10 +407,14 @@ def rand_gcg_signal(
         )
 
     # Generate random indices by randomly permuting valid token indices
-    best_tokens_indices = torch.stack([
-        valid_indices[torch.randperm(len(valid_indices), device=device)[:actual_topk]]
-        for _ in range(optim_mask.shape[0])
-    ])
+    best_tokens_indices = torch.stack(
+        [
+            valid_indices[
+                torch.randperm(len(valid_indices), device=device)[:actual_topk]
+            ]
+            for _ in range(optim_mask.shape[0])
+        ]
+    )
 
     return best_tokens_indices
 
@@ -459,10 +464,14 @@ def universal_rand_gcg_signal(
         )
 
     # Generate random indices by randomly permuting valid token indices
-    best_tokens_indices = torch.stack([
-        valid_indices[torch.randperm(len(valid_indices), device=device)[:actual_topk]]
-        for _ in range(optim_mask.shape[0])
-    ])
+    best_tokens_indices = torch.stack(
+        [
+            valid_indices[
+                torch.randperm(len(valid_indices), device=device)[:actual_topk]
+            ]
+            for _ in range(optim_mask.shape[0])
+        ]
+    )
 
     return best_tokens_indices
 
@@ -1316,9 +1325,27 @@ def average_target_logprobs_signal(
     canonical_device_idx=0,
     normalize_grads_before_accumulation=True,
     ascii_only: bool = False,
-    clamp_tokens: bool = False,
+    clamp_tokens: bool = True,
     **kwargs,
 ):
+    """
+    Compute averaged gradients across multiple samples/models for universal GCG.
+
+    Args:
+        models: List of models
+        tokenizer: Tokenizer
+        input_tokenized_data_list: List of input tokenized data
+        gcg_topk: Number of top-k tokens to return
+        debug_logger: Logger instance
+        step_num: Current step number
+        canonical_device_idx: Device to move gradients to for averaging
+        normalize_grads_before_accumulation: Whether to normalize gradients before averaging
+        ascii_only: Whether to filter non-ASCII tokens
+        clamp_tokens: Whether to clamp token IDs to valid range
+
+    Returns:
+        Tensor of top-k token indices (shape: [optim_positions, topk])
+    """
     num_elements_per_batch = len(input_tokenized_data_list) // len(models)
     input_tokenized_data_list_batches = [
         input_tokenized_data_list[
@@ -1327,35 +1354,37 @@ def average_target_logprobs_signal(
         for x in range(len(models))
     ]
 
+    # Get vocabulary size from first model
+    vocab_size = models[0].get_input_embeddings().weight.shape[0]
+
     grads_list = []
+    skipped_samples = 0
+
     for model, input_tokenized_data_list_batch in zip(
         models, input_tokenized_data_list_batches
     ):
         grads_list_batch = []
-        for input_tokenized_data in input_tokenized_data_list_batch:
+        for sample_idx, input_tokenized_data in enumerate(input_tokenized_data_list_batch):
             input_points = input_tokenized_data["tokens"]
             masks_data = input_tokenized_data["masks"]
 
             optim_mask: torch.Tensor = masks_data["optim_mask"]
             target_mask: torch.Tensor = masks_data["target_mask"]
 
-            # Get vocabulary size from embedding layer (modern approach)
-            vocab_size = model.get_input_embeddings().weight.shape[0]
-
             # Check if any tokens exceed vocab_size and clamp if requested
             max_token_id = input_points.max().item()
             if max_token_id >= vocab_size:
                 if clamp_tokens:
                     debug_logger.warning(
-                        f"Token ID {max_token_id} exceeds vocab size {vocab_size}, clamping tokens"
+                        f"Step {step_num}, Sample {sample_idx}: Token ID {max_token_id} exceeds vocab size {vocab_size}, clamping tokens"
                     )
                     # Clamp tokens to valid range
                     input_points = input_points.clamp(max=vocab_size - 1)
                 else:
                     debug_logger.error(
-                        f"Token ID {max_token_id} exceeds vocab size {vocab_size}, but clamping is disabled"
+                        f"Step {step_num}, Sample {sample_idx}: Token ID {max_token_id} exceeds vocab size {vocab_size}, but clamping is disabled. Skipping sample."
                     )
-                    # Skip this input and continue with next
+                    skipped_samples += 1
                     continue
 
             one_hot_tensor = torch.nn.functional.one_hot(
@@ -1366,26 +1395,97 @@ def average_target_logprobs_signal(
             inputs_embeds = torch.unsqueeze(
                 one_hot_tensor.to(embedding_tensor.device) @ embedding_tensor, 0
             )
+
+            # Forward pass with NaN/Inf checking
             logits = model(inputs_embeds=inputs_embeds).logits
+
+            # Check for NaN/Inf in logits
+            if torch.isnan(logits).any() or torch.isinf(logits).any():
+                debug_logger.warning(
+                    f"Step {step_num}, Sample {sample_idx}: NaN or Inf detected in logits. Skipping sample."
+                )
+                skipped_samples += 1
+                continue
+
             loss_tensor = GCG_LOSS_FUNCTION(
                 logits[0, target_mask - 1, :],
                 input_points[target_mask].to(logits.device),
             ).sum()
+
+            # Check for NaN in loss
+            if torch.isnan(loss_tensor).item():
+                debug_logger.warning(
+                    f"Step {step_num}, Sample {sample_idx}: NaN detected in loss. Skipping sample."
+                )
+                skipped_samples += 1
+                continue
+
             loss_tensor.backward()
+
+            # Check for NaN in gradients
+            if one_hot_tensor.grad is None or torch.isnan(one_hot_tensor.grad).any():
+                debug_logger.warning(
+                    f"Step {step_num}, Sample {sample_idx}: NaN detected in gradients. Skipping sample."
+                )
+                skipped_samples += 1
+                continue
+
+            # Extract gradients for optimization positions
+            grad_optims = one_hot_tensor.grad[optim_mask, :]
+
             if normalize_grads_before_accumulation:
-                normalized_grad = one_hot_tensor.grad[
-                    optim_mask, :
-                ] / one_hot_tensor.grad[optim_mask, :].norm(dim=-1, keepdim=True)
+                # Normalize gradients with safety check
+                grad_norm = grad_optims.norm(dim=-1, keepdim=True)
+                # Avoid division by zero
+                grad_norm = torch.clamp(grad_norm, min=1e-10)
+                normalized_grad = grad_optims / grad_norm
                 grads_list_batch.append(normalized_grad)
             else:
-                grads_list_batch.append(one_hot_tensor.grad[optim_mask, :])
-        grads_list.append(torch.stack(grads_list_batch))
+                grads_list_batch.append(grad_optims)
 
+        if len(grads_list_batch) > 0:
+            grads_list.append(torch.stack(grads_list_batch))
+
+    # Check if we have any valid gradients
+    if len(grads_list) == 0:
+        debug_logger.error(
+            f"Step {step_num}: All samples were skipped due to errors. Returning random tokens."
+        )
+        # Return random valid token indices as fallback
+        return torch.stack(
+            [
+                torch.randperm(vocab_size)[:gcg_topk]
+                for _ in range(
+                    input_tokenized_data_list[0]["masks"]["optim_mask"].shape[0]
+                )
+            ]
+        )
+
+    if skipped_samples > 0:
+        debug_logger.warning(
+            f"Step {step_num}: Skipped {skipped_samples} samples due to errors"
+        )
+
+    # Move gradients to canonical device and average
     device_moved_grad_list = []
     for grads_list_batch_tensor in grads_list:
-        device_moved_grad_list.append(grads_list_batch_tensor.to(canonical_device_idx))
+        device_moved_grad_list.append(
+            grads_list_batch_tensor.to(f"cuda:{canonical_device_idx}")
+        )
 
     final_grads = -torch.cat(device_moved_grad_list, dim=0).mean(dim=0)
+
+    # Check for NaN/Inf in final averaged gradients
+    if torch.isnan(final_grads).any() or torch.isinf(final_grads).any():
+        debug_logger.error(
+            f"Step {step_num}: NaN or Inf in final averaged gradients. Returning random tokens."
+        )
+        return torch.stack(
+            [
+                torch.randperm(vocab_size)[:gcg_topk]
+                for _ in range(final_grads.shape[0])
+            ]
+        )
 
     # Always exclude special tokens from being selected
     special_toks = attack_utility.get_special_toks(tokenizer, device=final_grads.device)
@@ -1404,13 +1504,162 @@ def average_target_logprobs_signal(
     return best_tokens_indices
 
 
+def _validate_universal_decode_reencode(
+    candidate_tokens: torch.Tensor,
+    tokenizer: transformers.AutoTokenizer,
+) -> bool:
+    """
+    Validate that a candidate token sequence survives decode-reencode cycle.
+
+    Args:
+        candidate_tokens: Token sequence to validate
+        tokenizer: Tokenizer
+
+    Returns:
+        True if tokens are stable through decode-reencode, False otherwise
+    """
+    try:
+        # Decode full sequence
+        decoded_text = tokenizer.decode(
+            candidate_tokens.cpu(), skip_special_tokens=False
+        )
+
+        # Re-encode
+        reencoded_tokens = tokenizer.encode(
+            decoded_text, return_tensors="pt", add_special_tokens=False
+        )[0]
+
+        # Check if tokenization is preserved
+        return torch.equal(candidate_tokens.cpu(), reencoded_tokens.cpu())
+    except Exception:
+        # If any error occurs during validation, reject the candidate
+        return False
+
+
+def _apply_universal_decode_reencode_filter(
+    candidate_tensors: typing.List[torch.Tensor],
+    tokenizer: transformers.AutoTokenizer,
+    true_losses: torch.Tensor,
+    debug_logger: logging.Logger,
+    step_num: int,
+    rejection_threshold: float = 0.5,
+) -> typing.Tuple[int, int]:
+    """Apply decode-reencode validation filter to universal candidates.
+
+    For each candidate, checks all samples. If >rejection_threshold fraction of samples
+    fail decode-reencode validation, sets loss to inf for that candidate.
+
+    Args:
+        candidate_tensors: List of candidate tensors (one per input sample)
+        tokenizer: Tokenizer
+        true_losses: Loss values for candidates (modified in place)
+        debug_logger: Logger instance
+        step_num: Current step number
+        rejection_threshold: Fraction of samples that must fail to reject candidate (default 0.5)
+
+    Returns:
+        Tuple of (total_candidates_checked, total_candidates_invalid)
+    """
+    num_candidates = candidate_tensors[0].shape[0]
+    num_samples = len(candidate_tensors)
+    total_invalid = 0
+
+    for candidate_idx in range(num_candidates):
+        # Count how many samples fail for this candidate
+        samples_failing = 0
+        for sample_idx in range(num_samples):
+            candidate_tokens = candidate_tensors[sample_idx][candidate_idx]
+            if not _validate_universal_decode_reencode(candidate_tokens, tokenizer):
+                samples_failing += 1
+
+        # If more than threshold fraction fail, reject this candidate
+        failure_fraction = samples_failing / num_samples
+        if failure_fraction > rejection_threshold:
+            true_losses[candidate_idx] = float("inf")
+            total_invalid += 1
+
+    if total_invalid > 0:
+        debug_logger.info(
+            f"Step {step_num}: Filtered {total_invalid}/{num_candidates} candidates "
+            f"(>{rejection_threshold*100:.0f}% samples failed decode-reencode)"
+        )
+
+    if total_invalid == num_candidates:
+        debug_logger.warning(
+            f"Step {step_num}: ALL candidates failed decode-reencode validation! "
+            "Using best of invalid candidates."
+        )
+
+    return num_candidates, total_invalid
+
+
+def _compute_universal_argmax_match(
+    models: list[transformers.AutoModelForCausalLM],
+    tokenizer: transformers.AutoTokenizer,
+    current_input_tokenized_data_list: typing.List[typing.Dict],
+) -> float:
+    """Compute fraction of samples where argmax predictions match target.
+
+    Args:
+        models: List of models
+        tokenizer: Tokenizer
+        current_input_tokenized_data_list: Current input tokenized data list
+
+    Returns:
+        Fraction in [0, 1] of samples where argmax matches target
+    """
+    num_elements_per_model = len(current_input_tokenized_data_list) // len(models)
+    total_samples = len(current_input_tokenized_data_list)
+    samples_matching = 0
+
+    for model_idx, model in enumerate(models):
+        start_idx = model_idx * num_elements_per_model
+        end_idx = start_idx + num_elements_per_model
+
+        for input_data in current_input_tokenized_data_list[start_idx:end_idx]:
+            tokens = input_data["tokens"]
+            masks_data = input_data["masks"]
+            target_mask = masks_data["target_mask"]
+            target_tokens = tokens[target_mask]
+
+            # Check argmax match
+            with torch.no_grad():
+                logits = model(tokens.unsqueeze(0).to(model.device)).logits[0]
+                # Get predictions at target positions (shift by 1 for causal LM)
+                pred_logits = logits[target_mask - 1]
+                predictions = torch.argmax(pred_logits, dim=-1)
+
+                if torch.all(predictions.cpu() == target_tokens.cpu()):
+                    samples_matching += 1
+
+    return samples_matching / total_samples if total_samples > 0 else 0.0
+
+
 def DEFAULT_GCG_RANDOMNESS_STRATEGY(
     tokenizer,
     best_tokens_indices,
     input_tokenized_data_list,
     substitution_validity_function,
     max_candidate_size,
+    debug_logger: typing.Optional[logging.Logger] = None,
 ):
+    """
+    Default randomness strategy for universal GCG.
+
+    Note: Decode-reencode filtering is done AFTER loss computation via
+    _apply_universal_decode_reencode_filter for consistency with single-sample GCG.
+
+    Args:
+        tokenizer: Tokenizer
+        best_tokens_indices: Top-k token indices from signal function
+        input_tokenized_data_list: List of input tokenized data
+        substitution_validity_function: Optional custom validation function
+        max_candidate_size: Number of candidates to generate
+        debug_logger: Optional logger for logging statistics
+
+    Returns:
+        List of candidate tensors (one per input sample)
+    """
     indices_to_sample = set()
     indices_to_exclude = set()
 
@@ -1435,18 +1684,14 @@ def DEFAULT_GCG_RANDOMNESS_STRATEGY(
                 best_tokens_indices[(first_coordinate, second_coordinate)]
             )
 
-            if (substitution_validity_function is None) or (
-                substitution_validity_function(
+            # Check custom substitution validity function (e.g., SecAlign filter)
+            if substitution_validity_function is not None:
+                if not substitution_validity_function(
                     random_substitution_make, tokenizer=tokenizer, masks_data=masks_data
-                )
-            ):
-                pass
-            else:
-                # SUBSTITUTION_INVALID_STRING = "substitution_invalid"
-                # logger.log(SUBSTITUTION_INVALID_STRING)
-                indices_to_exclude.add((first_coordinate, second_coordinate))
-                all_substitutions_valid = False
-                break
+                ):
+                    indices_to_exclude.add((first_coordinate, second_coordinate))
+                    all_substitutions_valid = False
+                    break
 
         if not all_substitutions_valid:
             continue
@@ -1473,36 +1718,464 @@ def DEFAULT_ON_STEP(*args, **kwargs):
     pass
 
 
-# TODO: update this code
+# =============================================================================
+# Universal GCG Helper Functions
+# =============================================================================
+
+
+def _setup_universal_caching(
+    to_cache_logits: bool,
+    to_cache_attentions: bool,
+) -> typing.Tuple[typing.Any, typing.Optional[typing.Any]]:
+    """Setup caching for universal GCG with average logprobs.
+
+    Args:
+        to_cache_logits: Whether to cache logprobs
+        to_cache_attentions: Whether to cache attentions
+
+    Returns:
+        Tuple of (average_target_logprobs_function, att_cacher)
+    """
+    if to_cache_logits:
+        average_target_logprobs = attack_utility.CachedAverageLogprobs()
+    else:
+        raise ValueError(
+            "Universal GCG requires caching enabled. Set to_cache_logits=True"
+        )
+
+    if to_cache_attentions:
+        att_cacher = None
+        # att_cacher = attack_utility.CachedAverageBulkForward()
+    else:
+        raise ValueError(
+            "Universal GCG requires caching enabled. Set to_cache_attentions=True"
+        )
+
+    return average_target_logprobs, att_cacher
+
+
+def _evaluate_universal_initial_state(
+    models: list[transformers.AutoModelForCausalLM],
+    tokenizer: transformers.AutoTokenizer,
+    input_tokenized_data_list: typing.List[typing.Dict],
+    masks_data_list: typing.List[typing.Dict[str, torch.Tensor]],
+    true_loss_function: typing.Callable,
+    average_target_logprobs_function: typing.Callable,
+    true_loss_kwargs: typing.Dict,
+    debug_logger: logging.Logger,
+) -> typing.Tuple[typing.List[typing.Dict], typing.List[float], typing.Dict]:
+    """Evaluate initial state before universal optimization.
+
+    Args:
+        models: List of models
+        tokenizer: Tokenizer
+        input_tokenized_data_list: List of input tokenized data
+        masks_data_list: List of masks
+        true_loss_function: Loss function
+        average_target_logprobs_function: Average logprobs function
+        true_loss_kwargs: Kwargs for loss function
+        debug_logger: Logger instance
+
+    Returns:
+        Tuple of (best_tokens_dicts_list, average_logprobs_list, initial_metric)
+    """
+    step_start_time = time.time()
+
+    # Compute initial loss
+    initial_true_loss = true_loss_function(
+        models,
+        tokenizer,
+        [torch.unsqueeze(x["tokens"], 0) for x in input_tokenized_data_list],
+        masks_data_list,
+        debug_logger,
+        **true_loss_kwargs,
+    )
+
+    # Compute initial average logprobs
+    initial_average_logprobs = average_target_logprobs_function(
+        models,
+        tokenizer,
+        [torch.unsqueeze(x["tokens"], 0) for x in input_tokenized_data_list],
+        masks_data_list,
+        debug_logger,
+    )
+    initial_average_logprobs = initial_average_logprobs.item()
+
+    best_tokens_dicts_list = [
+        attack_utility.form_best_tokens_dict(input_tokenized_data_list)
+    ]
+    average_logprobs_list = [initial_average_logprobs]
+
+    initial_metric = {
+        "step": -1,
+        "loss": initial_average_logprobs,
+        "time_elapsed": time.time() - step_start_time,
+    }
+
+    return best_tokens_dicts_list, average_logprobs_list, initial_metric
+
+
+def _generate_universal_candidates(
+    best_tokens_indices: torch.Tensor,
+    current_input_tokenized_data_list: typing.List[typing.Dict],
+    randomness_strategy: typing.Callable,
+    substitution_validity_function: typing.Optional[typing.Callable],
+    num_forward_evals: int,
+    tokenizer: transformers.AutoTokenizer,
+    filter_tokenized_sequences: bool = True,
+    debug_logger: typing.Optional[logging.Logger] = None,
+) -> typing.List[torch.Tensor]:
+    """Generate universal candidates using the randomness strategy.
+
+    Args:
+        best_tokens_indices: Top-k token indices from signal function
+        current_input_tokenized_data_list: Current input tokenized data list
+        randomness_strategy: Function to generate candidates
+        substitution_validity_function: Optional validation function
+        num_forward_evals: Number of candidates to generate
+        tokenizer: Tokenizer
+        filter_tokenized_sequences: Whether to filter candidates that fail decode-reencode
+        debug_logger: Optional logger for logging statistics
+
+    Returns:
+        List of candidate tensors (one per input sample)
+    """
+    # Check if the randomness strategy accepts debug_logger
+    # This maintains backward compatibility with custom strategies
+    sig = inspect.signature(randomness_strategy)
+    params = sig.parameters
+
+    kwargs = {}
+    if 'debug_logger' in params:
+        kwargs['debug_logger'] = debug_logger
+
+    candidates = randomness_strategy(
+        tokenizer,
+        best_tokens_indices,
+        current_input_tokenized_data_list,
+        substitution_validity_function,
+        num_forward_evals,
+        **kwargs,
+    )
+
+    return candidates
+
+
+def _compute_universal_step_metrics(
+    best_loss: float,
+    average_logprobs: float,
+    argmax_match: float,
+    step_num: int,
+    step_start_time: float,
+    models: list[transformers.AutoModelForCausalLM],
+) -> typing.Dict:
+    """Compute metrics for the current universal optimization step.
+
+    Args:
+        best_loss: Best loss value for this step
+        average_logprobs: Average logprobs across samples
+        argmax_match: Fraction of samples where argmax matches target [0, 1]
+        step_num: Current step number
+        step_start_time: Time when step started
+        models: List of models
+
+    Returns:
+        Dict containing step metrics
+    """
+    step_metric = {
+        "step": step_num,
+        "best_loss": best_loss,
+        "avg_loss": average_logprobs,
+        "argmax_match": argmax_match,
+        "time_elapsed": time.time() - step_start_time,
+        "max_memory_reserved": max(
+            torch.cuda.max_memory_reserved(device=model.device) / 1024**3
+            for model in models
+        ),
+    }
+
+    return step_metric
+
+
+def _check_universal_early_stopping(
+    argmax_match: float,
+    argmax_match_threshold: float,
+    successive_correct_outputs: int,
+    identical_outputs_before_stop: int,
+    debug_logger: logging.Logger,
+    step_num: int,
+) -> typing.Tuple[bool, int]:
+    """Check if early stopping criteria are met for universal GCG.
+
+    Uses argmax match fraction instead of generation-based checks for speed.
+
+    Args:
+        argmax_match: Fraction of samples where argmax matches target [0, 1]
+        argmax_match_threshold: Threshold for considering a step successful
+        successive_correct_outputs: Count of successive correct outputs
+        identical_outputs_before_stop: Number of consecutive successes needed
+        debug_logger: Logger instance
+        step_num: Current step number
+
+    Returns:
+        Tuple of (should_stop, updated_successive_correct_outputs)
+    """
+    if argmax_match >= argmax_match_threshold:
+        successive_correct_outputs += 1
+        debug_logger.info(
+            f"Step {step_num}: Argmax match {argmax_match:.2%} >= {argmax_match_threshold:.0%} "
+            f"({successive_correct_outputs}/{identical_outputs_before_stop})"
+        )
+        if successive_correct_outputs >= identical_outputs_before_stop:
+            return True, successive_correct_outputs
+    else:
+        successive_correct_outputs = 0
+
+    return False, successive_correct_outputs
+
+
+def _evaluate_universal_final_best(
+    models: list[transformers.AutoModelForCausalLM],
+    tokenizer: transformers.AutoTokenizer,
+    best_tokens_dicts_list: typing.List[typing.Dict],
+    average_logprobs_list: typing.List[float],
+    input_tokenized_data_list: typing.List[typing.Dict],
+    generation_config: typing.Dict,
+    debug_logger: logging.Logger,
+    timestamp_start: float,
+    global_max_memory_reserved: float,
+    total_steps: int,
+) -> typing.Dict:
+    """Evaluate the global best result and return final metrics.
+
+    Args:
+        models: List of models
+        tokenizer: Tokenizer
+        best_tokens_dicts_list: List of best token dicts from each step
+        average_logprobs_list: List of average logprobs from each step
+        input_tokenized_data_list: Original input tokenized data list
+        generation_config: Configuration for generation
+        debug_logger: Logger instance
+        timestamp_start: Timestamp when optimization started
+        global_max_memory_reserved: Maximum GPU memory reserved
+        total_steps: Total number of steps completed
+
+    Returns:
+        Dict containing final evaluation metrics
+    """
+    # Find global best based on average logprobs
+    if not average_logprobs_list:
+        return {
+            "best_step": -1,
+            "best_loss": float("inf"),
+            "total_steps": total_steps,
+            "total_runtime": time.time() - timestamp_start,
+            "max_memory_reserved": global_max_memory_reserved,
+            "samples_matching": 0,
+            "total_samples": len(input_tokenized_data_list),
+        }
+
+    logprobs_tensor = torch.tensor(average_logprobs_list)
+    best_idx = torch.argmin(logprobs_tensor).item()
+    best_loss = average_logprobs_list[best_idx]
+    best_tokens_dict = best_tokens_dicts_list[best_idx]
+
+    debug_logger.info(f"Global best found at step {best_idx} with loss {best_loss:.4f}")
+
+    # Apply best tokens to input data and evaluate
+    best_input_tokenized_data_list = attack_utility.update_all_tokens(
+        best_tokens_dict, input_tokenized_data_list
+    )
+
+    # Evaluate each sample
+    num_elements_per_model = len(best_input_tokenized_data_list) // len(models)
+    samples_matching = 0
+    sample_results = []
+
+    for model_idx, model in enumerate(models):
+        start_idx = model_idx * num_elements_per_model
+        end_idx = start_idx + num_elements_per_model
+
+        for sample_idx, input_data in enumerate(
+            best_input_tokenized_data_list[start_idx:end_idx]
+        ):
+            tokens = input_data["tokens"]
+            masks_data = input_data["masks"]
+            input_mask = masks_data["input_mask"]
+            target_mask = masks_data["target_mask"]
+            target_tokens = tokens[target_mask]
+
+            # Generate text
+            input_tokens_for_generation = tokens[input_mask]
+            with torch.inference_mode():
+                generated_tokens = model.generate(
+                    torch.unsqueeze(input_tokens_for_generation, dim=0).to(model.device),
+                    attention_mask=torch.ones(
+                        1, len(input_tokens_for_generation), device=model.device
+                    ),
+                    **generation_config,
+                )
+                input_length = len(input_tokens_for_generation)
+                generated_text = tokenizer.decode(
+                    generated_tokens[0, input_length:], skip_special_tokens=True
+                )
+
+            # Check if generation starts with target
+            target_text = tokenizer.decode(target_tokens, skip_special_tokens=True)
+            starts_with_target = generated_text.strip().startswith(target_text.strip())
+
+            if starts_with_target:
+                samples_matching += 1
+
+            sample_results.append({
+                "model_idx": model_idx,
+                "sample_idx": sample_idx,
+                "starts_with_target": starts_with_target,
+                "generated_text": generated_text[:200],
+                "target_text": target_text[:100],
+            })
+
+    # Extract and decode the best injection strings
+    prefix_injection = tokenizer.decode(
+        best_tokens_dict["prefix_tokens"], skip_special_tokens=False
+    )
+    suffix_injection = tokenizer.decode(
+        best_tokens_dict["suffix_tokens"], skip_special_tokens=False
+    )
+
+    debug_logger.info(f"Best prefix injection: {prefix_injection}")
+    debug_logger.info(f"Best suffix injection: {suffix_injection}")
+    debug_logger.info(
+        f"Samples matching target: {samples_matching}/{len(best_input_tokenized_data_list)}"
+    )
+
+    return {
+        "best_step": best_idx,
+        "best_loss": best_loss,
+        "prefix_injection": prefix_injection,
+        "suffix_injection": suffix_injection,
+        "samples_matching": samples_matching,
+        "total_samples": len(best_input_tokenized_data_list),
+        "sample_results": sample_results,
+        "total_steps": total_steps,
+        "total_runtime": time.time() - timestamp_start,
+        "max_memory_reserved": global_max_memory_reserved,
+    }
+
+
+def _extract_universal_best_tokens(
+    candidate_tensors: typing.List[torch.Tensor],
+    best_idx: int,
+    masks_data_list: typing.List[typing.Dict[str, torch.Tensor]],
+) -> typing.Dict[str, torch.Tensor]:
+    """Extract prefix and suffix tokens from the best candidate.
+
+    Args:
+        candidate_tensors: List of candidate tensors (one per input sample)
+        best_idx: Index of best candidate
+        masks_data_list: List of masks
+
+    Returns:
+        Dict with 'prefix_tokens' and 'suffix_tokens'
+    """
+    best_tokens_dict = {
+        "prefix_tokens": candidate_tensors[0][best_idx][
+            masks_data_list[0]["prefix_mask"]
+        ],
+        "suffix_tokens": candidate_tensors[0][best_idx][
+            masks_data_list[0]["suffix_mask"]
+        ],
+    }
+    return best_tokens_dict
+
+
 def weakly_universal_gcg(
     models: list[transformers.AutoModelForCausalLM],
     tokenizer: transformers.AutoTokenizer,
     input_tokenized_data_list: typing.List[typing.Dict],
     universal_gcg_hyperparameters: typing.Dict,
     *,
-    eval_initial,
-    generation_config,
-    to_cache_logits,
-    to_cache_attentions,
+    eval_initial: bool = True,
+    generation_config: typing.Dict = None,
+    to_cache_logits: bool = True,
+    to_cache_attentions: bool = True,
     clamp_tokens: bool = True,
     ascii_only: bool = False,
-):
-    # Input data no longer logged
+    # Logging parameters
+    run_id: typing.Optional[str] = None,
+    debug_log_dir: typing.Optional[str] = None,
+    metrics_dir: typing.Optional[str] = None,
+    metrics_every_n_steps: int = 1,
+    # Decode-reencode validation (applied after loss computation)
+    filter_tokenized_sequences: bool = True,
+    decode_reencode_rejection_threshold: float = 0.5,
+    # Early stopping parameters (using argmax match)
+    early_stop: bool = False,
+    identical_outputs_before_stop: int = 3,
+    argmax_match_threshold: float = 1.0,
+    # Random seed for reproducibility
+    seed: typing.Optional[int] = None,
+) -> typing.Tuple[typing.List[typing.Dict], typing.List[float], typing.Dict]:
+    """
+    Run universal GCG optimization attack across multiple samples/models.
 
-    # TODO: logging
-    # NEED TO UPDATE ALL FUNCTIONS WHERE THIS IS PASSED AS WELL
-    debug_logger = logging.getLogger()
+    Args:
+        models: List of models (can be on different GPUs)
+        tokenizer: HuggingFace tokenizer
+        input_tokenized_data_list: List of tokenized input data (must be normalized)
+        universal_gcg_hyperparameters: Dict containing hyperparameters
+        eval_initial: Whether to evaluate initial state
+        generation_config: Configuration for text generation (used for final validation)
+        to_cache_logits: Whether to cache logprobs
+        to_cache_attentions: Whether to cache attentions
+        clamp_tokens: Whether to clamp token IDs
+        ascii_only: Whether to use ASCII-only tokens
+        run_id: Unique identifier for this run
+        debug_log_dir: Directory for debug logs
+        metrics_dir: Directory for metrics
+        metrics_every_n_steps: How often to log metrics
+        filter_tokenized_sequences: Whether to filter candidates that fail decode-reencode
+        decode_reencode_rejection_threshold: Reject candidate if >threshold samples fail (default 0.5)
+        early_stop: Whether to enable early stopping based on argmax match
+        identical_outputs_before_stop: Number of consecutive successes before stopping
+        argmax_match_threshold: Fraction of samples that must have argmax match (default 1.0)
+        seed: Random seed for reproducibility
 
-    if to_cache_logits:
-        average_target_logprobs = attack_utility.CachedAverageLogprobs()
-    else:
-        raise ValueError(f"Just cache ffs. Or write your own implementation.")
+    Returns:
+        Tuple of (best_tokens_dicts_list, average_logprobs_list, final_metrics) where:
+        - best_tokens_dicts_list: List of dicts with 'prefix_tokens' and 'suffix_tokens'
+        - average_logprobs_list: List of average logprobs values for each step
+        - final_metrics: Dict containing final evaluation metrics
+    """
+    timestamp_start = time.time()
 
-    if to_cache_attentions:
-        att_cacher = None
-        # att_cacher = attack_utility.CachedAverageBulkForward()
-    else:
-        raise ValueError(f"Just cache ffs. Or write your own implementation.")
+    # Setup logging infrastructure
+    if run_id is None:
+        run_id = f"universal_{int(timestamp_start)}"
+
+    debug_logger, step_metrics_path = setup_logging(
+        run_id=run_id, debug_log_dir=debug_log_dir, metrics_dir=metrics_dir
+    )
+
+    # Set random seeds for reproducibility
+    if seed is not None:
+        torch.manual_seed(seed)
+        random.seed(seed)
+        np.random.seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
+        debug_logger.info(f"Random seed set to {seed}")
+
+    # Setup caching
+    average_target_logprobs, att_cacher = _setup_universal_caching(
+        to_cache_logits, to_cache_attentions
+    )
+
+    # Extract hyperparameters
+    max_steps = universal_gcg_hyperparameters["max_steps"]
+    topk = universal_gcg_hyperparameters["topk"]
+    num_forward_evals = universal_gcg_hyperparameters["forward_eval_candidates"]
 
     signal_function = universal_gcg_hyperparameters.get(
         "signal_function", average_target_logprobs_signal
@@ -1528,46 +2201,79 @@ def weakly_universal_gcg(
         true_loss_kwargs = {}
     true_loss_kwargs["att_cacher"] = att_cacher
 
+    # Set default generation config if not provided
+    if generation_config is None:
+        generation_config = {"do_sample": False, "max_new_tokens": 50}
+
     best_tokens_dicts_list = []
     average_logprobs_list = []
+    successive_correct_outputs = 0  # For early stopping
 
     masks_data_list = [x["masks"] for x in input_tokenized_data_list]
 
-    if eval_initial:
-        initial_true_loss = true_loss_function(
+    # Evaluate initial state if requested
+    if eval_initial and step_metrics_path is not None:
+        (
+            best_tokens_dicts_list,
+            average_logprobs_list,
+            initial_metric,
+        ) = _evaluate_universal_initial_state(
             models,
             tokenizer,
-            [torch.unsqueeze(x["tokens"], 0) for x in input_tokenized_data_list],
+            input_tokenized_data_list,
             masks_data_list,
+            true_loss_function,
+            average_target_logprobs,
+            true_loss_kwargs,
             debug_logger,
-            **true_loss_kwargs,
         )
-        # Initial loss logged in step metrics
-        initial_average_logprobs = average_target_logprobs(
+
+        # Log initial metrics
+        log_step_metric(step_metrics_path, initial_metric)
+    elif eval_initial:
+        # Evaluate initial state without logging
+        (
+            best_tokens_dicts_list,
+            average_logprobs_list,
+            _,
+        ) = _evaluate_universal_initial_state(
             models,
             tokenizer,
-            [torch.unsqueeze(x["tokens"], 0) for x in input_tokenized_data_list],
+            input_tokenized_data_list,
             masks_data_list,
+            true_loss_function,
+            average_target_logprobs,
+            true_loss_kwargs,
             debug_logger,
-        )
-        initial_average_logprobs = initial_average_logprobs.item()
-        # Logprobs logged in step metrics
-        average_logprobs_list.append(initial_average_logprobs)
-        best_tokens_dicts_list.append(
-            attack_utility.form_best_tokens_dict(input_tokenized_data_list)
         )
 
     current_input_tokenized_data_list = input_tokenized_data_list
 
+    # Track global maximum memory reserved across all steps
+    global_max_memory_reserved = 0.0
+
+    # Statistics for decode-reencode validation
+    total_candidates_checked = 0
+    total_candidates_invalid = 0
+
     # Create progress bar for universal optimization steps
     pbar = tqdm(
-        range(universal_gcg_hyperparameters["max_steps"]),
+        range(max_steps),
         desc="Universal GCG Optimization",
         unit="step",
         disable=False,
     )
 
+    step_num = 0
+
     for step_num in pbar:
+        step_start_time = time.time()
+
+        # Reset peak memory stats at start of each iteration
+        for model in models:
+            torch.cuda.reset_peak_memory_stats(device=model.device)
+
+        # Call on_step_begin hook
         step_begin_state = on_step_begin(
             models,
             tokenizer,
@@ -1578,65 +2284,169 @@ def weakly_universal_gcg(
             **on_step_begin_kwargs,
         )
 
+        # Compute signal (gradient-based top-k tokens)
+        signal_start = time.time()
         best_tokens_indices = signal_function(
             models,
             tokenizer,
             current_input_tokenized_data_list,
-            universal_gcg_hyperparameters["topk"],
+            topk,
             debug_logger,
             step_num=step_num,
             clamp_tokens=clamp_tokens,
             ascii_only=ascii_only,
             **(signal_kwargs or {}),
         )
-        forward_eval_candidates = randomness_strategy(
-            tokenizer,
+        signal_end = time.time()
+
+        # Clear model gradients
+        for model in models:
+            model.zero_grad(set_to_none=True)
+        torch.cuda.synchronize()
+
+        # Generate candidates
+        candidate_gen_start = time.time()
+        candidate_tensors = _generate_universal_candidates(
             best_tokens_indices,
             current_input_tokenized_data_list,
+            randomness_strategy,
             substitution_validity_function,
-            universal_gcg_hyperparameters["forward_eval_candidates"],
+            num_forward_evals,
+            tokenizer,
+            filter_tokenized_sequences=filter_tokenized_sequences,
+            debug_logger=debug_logger,
         )
+        candidate_gen_end = time.time()
+
+        del best_tokens_indices
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        # Compute losses for all candidates
+        loss_comp_start = time.time()
         true_losses = true_loss_function(
             models,
             tokenizer,
-            forward_eval_candidates,
+            candidate_tensors,
             masks_data_list,
             debug_logger,
             step_num=step_num,
             **(true_loss_kwargs or {}),
         )
+        loss_comp_end = time.time()
+
+        # Apply decode-reencode filter AFTER loss computation
+        if filter_tokenized_sequences:
+            num_checked, num_invalid = _apply_universal_decode_reencode_filter(
+                candidate_tensors,
+                tokenizer,
+                true_losses,
+                debug_logger,
+                step_num,
+                rejection_threshold=decode_reencode_rejection_threshold,
+            )
+            total_candidates_checked += num_checked
+            total_candidates_invalid += num_invalid
+
+        # Select best candidate
         best_idx = torch.argmin(true_losses)
-        best_loss = true_losses[best_idx]
-        best_tokens_dict = {
-            "prefix_tokens": forward_eval_candidates[0][best_idx][
-                masks_data_list[0]["prefix_mask"]
-            ],
-            "suffix_tokens": forward_eval_candidates[0][best_idx][
-                masks_data_list[0]["suffix_mask"]
-            ],
-        }
+        best_loss = true_losses[best_idx].item()
+
+        # Extract best tokens
+        best_tokens_dict = _extract_universal_best_tokens(
+            candidate_tensors, best_idx, masks_data_list
+        )
         best_tokens_dicts_list.append(best_tokens_dict)
+
+        # Compute average logprobs for best candidate
         average_logprobs = average_target_logprobs(
             models,
             tokenizer,
-            [torch.unsqueeze(x[best_idx], 0) for x in forward_eval_candidates],
+            [torch.unsqueeze(x[best_idx], 0) for x in candidate_tensors],
             masks_data_list,
             debug_logger,
         )
-        average_logprobs_list.append(average_logprobs.item())
+        average_logprobs_value = average_logprobs.item()
+        average_logprobs_list.append(average_logprobs_value)
+
+        # Update current tokens with best candidate
         current_input_tokenized_data_list = attack_utility.update_all_tokens(
             best_tokens_dict, current_input_tokenized_data_list
         )
 
-        # Update progress bar with current loss
+        # Compute argmax match fraction (always compute for progress bar)
+        argmax_match = _compute_universal_argmax_match(
+            models, tokenizer, current_input_tokenized_data_list
+        )
+
+        # Update progress bar
         pbar.set_postfix(
             {
                 "Loss": f"{best_loss:.4f}",
-                "Avg_Loss": f"{average_logprobs.item():.4f}",
+                "Avg_Loss": f"{average_logprobs_value:.4f}",
                 "Best": f"{min(average_logprobs_list):.4f}",
+                "Argmax": f"{argmax_match:.0%}",
             }
         )
 
+        # Compute and save metrics if enabled
+        if step_num % metrics_every_n_steps == 0 and step_metrics_path is not None:
+            step_metric = _compute_universal_step_metrics(
+                best_loss,
+                average_logprobs_value,
+                argmax_match,
+                step_num,
+                step_start_time,
+                models,
+            )
+
+            # Update global max memory reserved
+            if "max_memory_reserved" in step_metric:
+                global_max_memory_reserved = max(
+                    global_max_memory_reserved, step_metric["max_memory_reserved"]
+                )
+
+            # Log step metrics
+            log_step_metric(step_metrics_path, step_metric)
+
+        # Check early stopping if enabled (using argmax match)
+        if early_stop and step_num % metrics_every_n_steps == 0:
+            should_stop, successive_correct_outputs = _check_universal_early_stopping(
+                argmax_match,
+                argmax_match_threshold,
+                successive_correct_outputs,
+                identical_outputs_before_stop,
+                debug_logger,
+                step_num,
+            )
+
+            # Update progress bar with success count
+            pbar.set_postfix(
+                {
+                    "Loss": f"{best_loss:.4f}",
+                    "Avg_Loss": f"{average_logprobs_value:.4f}",
+                    "Best": f"{min(average_logprobs_list):.4f}",
+                    "Argmax": f"{argmax_match:.0%}",
+                    "Success": f"{successive_correct_outputs}",
+                }
+            )
+
+            if should_stop:
+                debug_logger.info(
+                    f"Early stopping triggered at step {step_num}: "
+                    f"argmax_match={argmax_match:.0%} >= threshold={argmax_match_threshold:.0%}"
+                )
+                # Log early stop in step metrics if enabled
+                if step_metrics_path is not None:
+                    log_step_metric(step_metrics_path, {
+                        "step": step_num,
+                        "event": "early_stop",
+                        "argmax_match": argmax_match,
+                        "successive_correct_outputs": successive_correct_outputs,
+                    })
+                break
+
+        # Call on_step_end hook
         step_end_state = on_step_end(
             models,
             tokenizer,
@@ -1653,4 +2463,48 @@ def weakly_universal_gcg(
     # Close progress bar
     pbar.close()
 
-    return best_tokens_dicts_list, average_logprobs_list
+    # Evaluate the global best result
+    final_metrics = _evaluate_universal_final_best(
+        models,
+        tokenizer,
+        best_tokens_dicts_list,
+        average_logprobs_list,
+        input_tokenized_data_list,
+        generation_config,
+        debug_logger,
+        timestamp_start,
+        global_max_memory_reserved,
+        step_num + 1,
+    )
+
+    # Log decode-reencode validation statistics
+    if filter_tokenized_sequences and total_candidates_checked > 0:
+        invalid_rate = (total_candidates_invalid / total_candidates_checked) * 100
+        debug_logger.info(
+            f"Decode-reencode validation: checked={total_candidates_checked}, "
+            f"invalid={total_candidates_invalid}, rate={invalid_rate:.2f}%"
+        )
+
+    # Log final summary
+    debug_logger.info(f"Universal GCG optimization completed in {step_num + 1} steps")
+    debug_logger.info(
+        f"Best average logprobs: {min(average_logprobs_list) if average_logprobs_list else 'N/A':.4f}"
+    )
+    debug_logger.info(f"Total runtime: {time.time() - timestamp_start:.2f}s")
+    if global_max_memory_reserved > 0:
+        debug_logger.info(
+            f"Max memory reserved: {global_max_memory_reserved:.2f} GB"
+        )
+    debug_logger.info(
+        f"Samples matching target: {final_metrics['samples_matching']}/{final_metrics['total_samples']}"
+    )
+
+    # Log final metrics to step metrics file if enabled
+    if step_metrics_path is not None:
+        log_step_metric(step_metrics_path, {
+            "step": -2,  # -2 indicates final evaluation
+            "event": "final_evaluation",
+            **{k: v for k, v in final_metrics.items() if k != "sample_results"},
+        })
+
+    return best_tokens_dicts_list, average_logprobs_list, final_metrics
