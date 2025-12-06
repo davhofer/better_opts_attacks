@@ -10,9 +10,14 @@ __version__ = "0.1.0"
 
 from betteroptsattack.algorithms.gcg import (
     custom_gcg,
+    check_argmax_match,
+)
+from betteroptsattack.algorithms.signals import (
     og_gcg_signal,
     rand_gcg_signal,
-    check_argmax_match,
+)
+from betteroptsattack.algorithms.universal_gcg import (
+    weakly_universal_gcg,
 )
 from betteroptsattack.utils.attack_utility import (
     initialize_adversarial_strings,
@@ -28,6 +33,7 @@ __all__ = [
     "og_gcg_signal",
     "rand_gcg_signal",
     "check_argmax_match",
+    "weakly_universal_gcg",
     "initialize_adversarial_strings",
     "string_masks_with_retry",
     "target_logprobs",
