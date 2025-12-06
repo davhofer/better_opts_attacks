@@ -1824,6 +1824,15 @@ def normalize_input_tokenized_data_list(
 ):
     for mask_key in keys_to_normalize:
         input_tokenized_data_list = normalize_mask(input_tokenized_data_list, mask_key)
+
+    # Update optim_mask to be the concatenation of normalized prefix_mask and suffix_mask
+    # This is necessary because optim_mask is used in gradient computation and must match
+    # across all samples for torch.stack to work
+    for input_tokenized_data in input_tokenized_data_list:
+        masks = input_tokenized_data["masks"]
+        if "prefix_mask" in masks and "suffix_mask" in masks:
+            masks["optim_mask"] = torch.cat([masks["prefix_mask"], masks["suffix_mask"]])
+
     return input_tokenized_data_list
 
 
