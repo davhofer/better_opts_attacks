@@ -1364,7 +1364,9 @@ def average_target_logprobs_signal(
         models, input_tokenized_data_list_batches
     ):
         grads_list_batch = []
-        for sample_idx, input_tokenized_data in enumerate(input_tokenized_data_list_batch):
+        for sample_idx, input_tokenized_data in enumerate(
+            input_tokenized_data_list_batch
+        ):
             input_points = input_tokenized_data["tokens"]
             masks_data = input_tokenized_data["masks"]
 
@@ -1481,10 +1483,7 @@ def average_target_logprobs_signal(
             f"Step {step_num}: NaN or Inf in final averaged gradients. Returning random tokens."
         )
         return torch.stack(
-            [
-                torch.randperm(vocab_size)[:gcg_topk]
-                for _ in range(final_grads.shape[0])
-            ]
+            [torch.randperm(vocab_size)[:gcg_topk] for _ in range(final_grads.shape[0])]
         )
 
     # Always exclude special tokens from being selected
@@ -1581,7 +1580,7 @@ def _apply_universal_decode_reencode_filter(
     if total_invalid > 0:
         debug_logger.info(
             f"Step {step_num}: Filtered {total_invalid}/{num_candidates} candidates "
-            f"(>{rejection_threshold*100:.0f}% samples failed decode-reencode)"
+            f"(>{rejection_threshold * 100:.0f}% samples failed decode-reencode)"
         )
 
     if total_invalid == num_candidates:
@@ -1743,13 +1742,9 @@ def _setup_universal_caching(
             "Universal GCG requires caching enabled. Set to_cache_logits=True"
         )
 
-    if to_cache_attentions:
-        att_cacher = None
-        # att_cacher = attack_utility.CachedAverageBulkForward()
-    else:
-        raise ValueError(
-            "Universal GCG requires caching enabled. Set to_cache_attentions=True"
-        )
+    # Attention caching is not currently implemented for universal GCG
+    # The parameter is accepted for API consistency but att_cacher is always None
+    att_cacher = None
 
     return average_target_logprobs, att_cacher
 
@@ -1846,8 +1841,8 @@ def _generate_universal_candidates(
     params = sig.parameters
 
     kwargs = {}
-    if 'debug_logger' in params:
-        kwargs['debug_logger'] = debug_logger
+    if "debug_logger" in params:
+        kwargs["debug_logger"] = debug_logger
 
     candidates = randomness_strategy(
         tokenizer,
@@ -2009,7 +2004,9 @@ def _evaluate_universal_final_best(
             input_tokens_for_generation = tokens[input_mask]
             with torch.inference_mode():
                 generated_tokens = model.generate(
-                    torch.unsqueeze(input_tokens_for_generation, dim=0).to(model.device),
+                    torch.unsqueeze(input_tokens_for_generation, dim=0).to(
+                        model.device
+                    ),
                     attention_mask=torch.ones(
                         1, len(input_tokens_for_generation), device=model.device
                     ),
@@ -2027,13 +2024,15 @@ def _evaluate_universal_final_best(
             if starts_with_target:
                 samples_matching += 1
 
-            sample_results.append({
-                "model_idx": model_idx,
-                "sample_idx": sample_idx,
-                "starts_with_target": starts_with_target,
-                "generated_text": generated_text[:200],
-                "target_text": target_text[:100],
-            })
+            sample_results.append(
+                {
+                    "model_idx": model_idx,
+                    "sample_idx": sample_idx,
+                    "starts_with_target": starts_with_target,
+                    "generated_text": generated_text[:200],
+                    "target_text": target_text[:100],
+                }
+            )
 
     # Extract and decode the best injection strings
     prefix_injection = tokenizer.decode(
@@ -2167,8 +2166,8 @@ def weakly_universal_gcg(
             torch.cuda.manual_seed_all(seed)
         debug_logger.info(f"Random seed set to {seed}")
 
-    # Setup caching
-    average_target_logprobs, att_cacher = _setup_universal_caching(
+    # Setup caching (att_cacher not used in universal GCG)
+    average_target_logprobs, _ = _setup_universal_caching(
         to_cache_logits, to_cache_attentions
     )
 
@@ -2199,7 +2198,6 @@ def weakly_universal_gcg(
 
     if true_loss_kwargs is None:
         true_loss_kwargs = {}
-    true_loss_kwargs["att_cacher"] = att_cacher
 
     # Set default generation config if not provided
     if generation_config is None:
@@ -2438,12 +2436,15 @@ def weakly_universal_gcg(
                 )
                 # Log early stop in step metrics if enabled
                 if step_metrics_path is not None:
-                    log_step_metric(step_metrics_path, {
-                        "step": step_num,
-                        "event": "early_stop",
-                        "argmax_match": argmax_match,
-                        "successive_correct_outputs": successive_correct_outputs,
-                    })
+                    log_step_metric(
+                        step_metrics_path,
+                        {
+                            "step": step_num,
+                            "event": "early_stop",
+                            "argmax_match": argmax_match,
+                            "successive_correct_outputs": successive_correct_outputs,
+                        },
+                    )
                 break
 
         # Call on_step_end hook
@@ -2492,19 +2493,20 @@ def weakly_universal_gcg(
     )
     debug_logger.info(f"Total runtime: {time.time() - timestamp_start:.2f}s")
     if global_max_memory_reserved > 0:
-        debug_logger.info(
-            f"Max memory reserved: {global_max_memory_reserved:.2f} GB"
-        )
+        debug_logger.info(f"Max memory reserved: {global_max_memory_reserved:.2f} GB")
     debug_logger.info(
         f"Samples matching target: {final_metrics['samples_matching']}/{final_metrics['total_samples']}"
     )
 
     # Log final metrics to step metrics file if enabled
     if step_metrics_path is not None:
-        log_step_metric(step_metrics_path, {
-            "step": -2,  # -2 indicates final evaluation
-            "event": "final_evaluation",
-            **{k: v for k, v in final_metrics.items() if k != "sample_results"},
-        })
+        log_step_metric(
+            step_metrics_path,
+            {
+                "step": -2,  # -2 indicates final evaluation
+                "event": "final_evaluation",
+                **{k: v for k, v in final_metrics.items() if k != "sample_results"},
+            },
+        )
 
     return best_tokens_dicts_list, average_logprobs_list, final_metrics
